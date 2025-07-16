@@ -18,9 +18,6 @@ from datetime import datetime, timezone, timedelta
 bot = telebot.TeleBot(TOKEN)
 
 
-# /todo добавить логгирование бота
-
-
 # Функция для подключения к Google Sheets
 def get_gsheet_client():
     cred_str = st.secrets['CREDS']
@@ -223,13 +220,15 @@ def handle_start(message):
     bot.reply_to(message, "Привет! Я бот клуба SwimOcean, который следит, чтобы все проплытые метры были учтены в "
                           "наших заплывах! "
                           "Чтобы увидеть список команд, которые я понимаю, и формат, "
-                          "в котором нужно записывать метры, введите команду /help")
+                          "в котором нужно записывать метры, введите команду /help .\n"
+                          "Чтобы посмотреть, где мы плывем, перейди по ссылке: https://swimocean.streamlit.app/")
 
 
 # Обработчик команды /help
 @bot.message_handler(commands=['help'])
 def handle_help(message):
-    bot.reply_to(message, "Расстояние нужно писать исключительно в виде метров.\n"
+    bot.reply_to(message, "Ссылка для просмотра нашего местоположения: https://swimocean.streamlit.app/ \n"
+                          "Расстояние нужно писать исключительно в виде метров.\n"
                           "Запись в даты в будущем невозможна.\n"
                           "Список команд и правил записи:\n\n"
                           "+<кол-во_метров> - записать метры (пример: +1000)\n"
@@ -305,6 +304,10 @@ def handle_all_stat(message):
                    photo=img,
                    caption='Общая статистика')
 
+
+# # Запрос копии таблицы с метрами
+# @bot.message_handler(commands=['get_table'])
+# def
 
 # Запуск бота
 if __name__ == '__main__':
