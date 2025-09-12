@@ -1,0 +1,13 @@
+name: Scheduled Ping
+
+on:
+  schedule:
+    - cron: '0 */10 * * *'  # Каждые 10 часов (в 00:00, 10:00, 20:00 UTC)
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping the web app URL
+        run: curl -I ${{ secrets.APP_URL }}
