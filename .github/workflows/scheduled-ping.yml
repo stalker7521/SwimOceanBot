@@ -2,7 +2,7 @@ name: Scheduled Ping
 
 on:
   schedule:
-    - cron: '0 */10 * * *'  # Каждые 10 часов (в 00:00, 10:00, 20:00 UTC)
+    - cron: '0 */7 * * *'  # Каждые 10 часов (в 00:00, 10:00, 20:00 UTC)
 
 jobs:
   pinger_job:
