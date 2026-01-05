@@ -246,11 +246,25 @@ def get_month_name(month_number):
     return months[month_number]
 
 
+def get_month_name_and_year(date) -> str:
+    month_number = date.month
+    year = str(date.year)[-2:]
+    months = ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+              'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
+    return months[month_number] + "'" + year
+
+
+def centered(text, width) -> str:
+    return f"{str(text):^{width}}"
+
+
 def create_mobile_table(data, title):
     # Используем компактную горизонтальную таблицу
     lines = [title, ""]
     for row in data:
-        line = " │ ".join(f"{str(cell):^8}" for cell in row)
+        month, volume, amount = row
+        lst = [centered(month, 11), centered(volume, 8), centered(amount, 4)]
+        line = " │ ".join(lst)
         lines.append(line)
         if row == data[0]:  # После заголовка
             lines.append("─" * (len(line) - 1))
@@ -272,12 +286,18 @@ def handle_pstat(message):
 
         sum_by_month = period_df[[user_name]].copy()
         sum_by_month = sum_by_month.groupby(pd.Grouper(axis=0, freq='m')).sum()
+        sum_by_month = sum_by_month.astype(int)
         count_by_month = period_df[[user_name]].copy()
-        count_by_month = count_by_month.replace(0, None).groupby(pd.Grouper(axis=0, freq='m')).count()
+        count_by_month = count_by_month.replace(0, None).groupby(
+            pd.Grouper(axis=0, freq='m')
+            )
+        count_by_month = count_by_month.count()
 
         merged_df = pd.merge(left=sum_by_month, right=count_by_month, on='Date')
         merged_df = merged_df.reset_index()
-        merged_df['Date'] = merged_df['Date'].apply(lambda x: get_month_name(x.month))
+        merged_df['Date'] = merged_df['Date'].apply(
+            lambda x: get_month_name_and_year(x)
+            )
 
         data = [['Месяц', 'Объём, м', 'Кол-во']]
         data.extend(merged_df.values.tolist())
