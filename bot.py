@@ -240,12 +240,6 @@ def handle_help(message):
                           "/stat_all - показ общей статистики")
 
 
-def get_month_name(month_number):
-    months = ['', 'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-              'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
-    return months[month_number]
-
-
 def get_month_name_and_year(date) -> str:
     month_number = date.month
     year = str(date.year)[-2:]
