@@ -1,0 +1,13 @@
+meta:
+  environment: python
+  toolchain:
+    name: pip
+    version: 3.14
+
+build:
+  requirementsPath: requirements.txt
+
+run:
+
+  command: streamlit run bot.py --server.port 80 --server.address 0.0.0.0
+  containerPort: 80
