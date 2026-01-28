@@ -1,35 +1,33 @@
-import json
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
-import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import telebot
 from telebot.types import ReactionTypeEmoji
-import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import os, json, telebot, gspread
 from settings import (
     TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, user_column_map, SCOPE, START_DATE
 )
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv  # для локальной работы env var
+load_dotenv()
 
 # Инициализация бота
+if TOKEN is None:
+    raise ValueError("Ошибка: Переменная окружения BOT_TOKEN не установлена!")
 bot = telebot.TeleBot(TOKEN)
 
 
 # Функция для подключения к Google Sheets
 def get_gsheet_client():
-    cred_str = st.secrets['CREDS']
-    creds_obj = json.loads(cred_str)
-    tmp_dir = TemporaryDirectory()
-    tmp_dir_path = Path(tmp_dir.name)
-    json_path = tmp_dir_path / 'creds.json'
-    with open(json_path, 'w') as f:
-        f.write(json.dumps(creds_obj, indent=2))
-    creds = ServiceAccountCredentials.from_json_keyfile_name(json_path, SCOPE)
+    cred_str = os.environ.get('CREDS')
+    if not cred_str:
+        raise ValueError("Переменная окружения CREDS не найдена!")
+
+    creds_dict = json.loads(cred_str)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     client = gspread.authorize(creds)
-    tmp_dir.cleanup()
     return client
 
 
@@ -284,14 +282,14 @@ def handle_pstat(message):
         count_by_month = period_df[[user_name]].copy()
         count_by_month = count_by_month.replace(0, None).groupby(
             pd.Grouper(axis=0, freq='m')
-            )
+        )
         count_by_month = count_by_month.count()
 
         merged_df = pd.merge(left=sum_by_month, right=count_by_month, on='Date')
         merged_df = merged_df.reset_index()
         merged_df['Date'] = merged_df['Date'].apply(
             lambda x: get_month_name_and_year(x)
-            )
+        )
 
         data = [['Месяц', 'Объём, м', 'Кол-во']]
         data.extend(merged_df.values.tolist())
@@ -325,6 +323,7 @@ def handle_all_stat(message):
 
 # Запуск бота
 if __name__ == '__main__':
-    st.write('Bot is running...')
+    print("Bot is starting...")
     bot.polling(none_stop=True)
-    st.stop()
+
+
