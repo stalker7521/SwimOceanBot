@@ -1,11 +1,10 @@
-
 .idea/
 .env
 .streamlit
 
 __pycache__/
-
-/photo
-/venv/
-.venv
+*.pyc
+photo/
+venv/
+.venv/
 /creds/

@@ -8,4 +8,4 @@ build:
   requirementsPath: requirements.txt
 
 run:
-  command: echo "HELLO AMVERA" && env && python -u bot.py
+  command: python -u bot.py
