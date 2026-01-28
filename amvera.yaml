@@ -8,5 +8,4 @@ build:
   requirementsPath: requirements.txt
 
 run:
-  command: python bot.py
-  containerPort: 80
+  command: python -u bot.py
