@@ -6,5 +6,6 @@ __pycache__/
 *.pyc
 photo/
 venv/
+creds/
 .venv/
 /creds/
