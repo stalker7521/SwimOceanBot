@@ -1,5 +1,5 @@
-venv
-.venv
-.git
+venv/*
+.venv/*
+.git/*
 .github
 __pycache__
