@@ -1,5 +1,6 @@
-venv/*
-.venv/*
-.git/*
-.github
-__pycache__
+venv/
+.venv/
+.git/
+.github/
+.idea/
+__pycache__/
