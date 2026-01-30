@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv  # для локальной работы env var
 load_dotenv() # для локальной работы env var
 
+
 # Инициализация бота
 if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения BOT_TOKEN не установлена!")
