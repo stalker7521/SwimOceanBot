@@ -6,4 +6,4 @@ meta:
 build:
   requirementsPath: requirements.txt
 run:
-  command: python -u bot.py
+  command: python -u debug.py

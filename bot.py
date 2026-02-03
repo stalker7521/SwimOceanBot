@@ -1,3 +1,4 @@
+import base64
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
@@ -25,11 +26,17 @@ bot = telebot.TeleBot(TOKEN)
 
 # Функция для подключения к Google Sheets
 def get_gsheet_client():
-    cred_str = os.environ.get('CREDS')
-    if not cred_str:
+    cred_str_b64 = os.environ.get('CREDS')
+    if not cred_str_b64:
         raise ValueError("Переменная окружения CREDS не найдена!")
 
-    creds_dict = json.loads(cred_str)
+    try:
+        # Декодируем из Base64 в обычную строку с кавычками
+        cred_str = base64.b64decode(cred_str_b64).decode('utf-8')
+        creds_dict = json.loads(cred_str)
+    except Exception as e:
+        raise ValueError(f"Ошибка декодирования CREDS: {e}")
+
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     client = gspread.authorize(creds)
     return client

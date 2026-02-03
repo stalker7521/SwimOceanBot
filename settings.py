@@ -1,4 +1,4 @@
-import json, os, sys
+import json, os
 from dotenv import load_dotenv  # для локальной работы env var
 
 load_dotenv()
