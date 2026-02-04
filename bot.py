@@ -288,7 +288,7 @@ def handle_pstat(message):
                                               end_date=today)
 
         sum_by_month = period_df[[user_name]].copy()
-        sum_by_month = sum_by_month.groupby(pd.Grouper(axis=0, freq='ME')).sum()
+        sum_by_month = sum_by_month.groupby(pd.Grouper(freq='ME')).sum()
         sum_by_month = sum_by_month.astype(int)
         count_by_month = period_df[[user_name]].copy()
         count_by_month = count_by_month.replace(0, None).groupby(
