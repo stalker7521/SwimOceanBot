@@ -55,7 +55,7 @@ def get_statistics_for_period(start_date: str, end_date: str):
     Возвращает статистики за выбранный период
     """
     df = get_df_from_google_sheet(WORKSHEET_NAME)
-    df['Date'] = pd.to_datetime(df['Date'])
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
     df = df.set_index('Date')
 
     for col in df.columns:
@@ -292,7 +292,7 @@ def handle_pstat(message):
         sum_by_month = sum_by_month.astype(int)
         count_by_month = period_df[[user_name]].copy()
         count_by_month = count_by_month.replace(0, None).groupby(
-            pd.Grouper(axis=0, freq='m')
+            pd.Grouper(axis=0, freq='ME')
         )
         count_by_month = count_by_month.count()
 
