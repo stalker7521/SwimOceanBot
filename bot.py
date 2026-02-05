@@ -1,7 +1,11 @@
+import base64
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
 import pandas as pd
+import matplotlib
+
+matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 import matplotlib.pyplot as plt
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
@@ -11,22 +15,28 @@ from settings import (
 )
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv  # для локальной работы env var
-load_dotenv() # для локальной работы env var
 
+load_dotenv()  # для локальной работы env var
 
 # Инициализация бота
 if TOKEN is None:
-    raise ValueError("Ошибка: Переменная окружения BOT_TOKEN не установлена!")
+    raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
 bot = telebot.TeleBot(TOKEN)
 
 
 # Функция для подключения к Google Sheets
 def get_gsheet_client():
-    cred_str = os.environ.get('CREDS')
-    if not cred_str:
+    cred_str_b64 = os.environ.get('CREDS')
+    if not cred_str_b64:
         raise ValueError("Переменная окружения CREDS не найдена!")
 
-    creds_dict = json.loads(cred_str)
+    try:
+        # Декодируем из Base64 в обычную строку с кавычками
+        cred_str = base64.b64decode(cred_str_b64).decode('utf-8')
+        creds_dict = json.loads(cred_str)
+    except Exception as e:
+        raise ValueError(f"Ошибка декодирования CREDS: {e}")
+
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     client = gspread.authorize(creds)
     return client
@@ -45,7 +55,7 @@ def get_statistics_for_period(start_date: str, end_date: str):
     Возвращает статистики за выбранный период
     """
     df = get_df_from_google_sheet(WORKSHEET_NAME)
-    df['Date'] = pd.to_datetime(df['Date'])
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
     df = df.set_index('Date')
 
     for col in df.columns:
@@ -278,11 +288,11 @@ def handle_pstat(message):
                                               end_date=today)
 
         sum_by_month = period_df[[user_name]].copy()
-        sum_by_month = sum_by_month.groupby(pd.Grouper(axis=0, freq='m')).sum()
+        sum_by_month = sum_by_month.groupby(pd.Grouper(freq='ME')).sum()
         sum_by_month = sum_by_month.astype(int)
         count_by_month = period_df[[user_name]].copy()
         count_by_month = count_by_month.replace(0, None).groupby(
-            pd.Grouper(axis=0, freq='m')
+            pd.Grouper(freq='ME')
         )
         count_by_month = count_by_month.count()
 
@@ -326,5 +336,3 @@ def handle_all_stat(message):
 if __name__ == '__main__':
     print("Bot is starting...")
     bot.polling(none_stop=True)
-
-
