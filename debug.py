@@ -2,6 +2,8 @@ import os
 import sys
 import time
 
+"""Debug скрипт проверки работы контейнера"""
+
 print("--- ЗАПУСК DEBUG СКРИПТА ---", flush=True)
 
 # 1. Проверка версии Python
@@ -11,13 +13,17 @@ print(f"Python version: {sys.version}", flush=True)
 print("Проверка импорта библиотек...", flush=True)
 try:
     import pandas
+
     print("Pandas: OK", flush=True)
     import matplotlib
+
     # Сразу лечим matplotlib, как договаривались
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+
     print("Matplotlib: OK (Agg mode set)", flush=True)
     import telebot
+
     print("Telebot: OK", flush=True)
 except Exception as e:
     print(f"ОШИБКА ИМПОРТА: {e}", flush=True)
