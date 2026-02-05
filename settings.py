@@ -28,7 +28,6 @@ try:
     # Декодируем из Base64 в строку
     raw_map_str = base64.b64decode(raw_map_b64).decode('utf-8')
 
-    # Превращаем строку JSON в словарь
     user_column_map = json.loads(raw_map_str)
     if not isinstance(user_column_map, dict):
         raise TypeError(f"Ожидался словарь (dict), а получен {type(user_column_map)}")
