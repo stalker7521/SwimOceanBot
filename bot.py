@@ -4,11 +4,12 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 import pandas as pd
 import matplotlib
+
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 import matplotlib.pyplot as plt
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
-import os, json, telebot, gspread
+import os, json, telebot, gspread, threading, time
 from settings import (
     TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, user_column_map, SCOPE, START_DATE
 )
@@ -17,6 +18,10 @@ from dotenv import load_dotenv  # для локальной работы env var
 
 load_dotenv()  # для локальной работы env var
 
+# Папка для бэкапов
+BACKUP_DIR = '/data' if os.path.exists('/') else './data'
+os.makedirs(BACKUP_DIR, exist_ok=True)
+BACKUP_INTERVAL_DAYS = 1
 # Инициализация бота
 if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
@@ -125,6 +130,30 @@ def write_to_sheet(value, usr_name, date):
 
     except Exception as e:
         print(f'An error occurred: {e}')
+
+
+def create_backup():
+    """Функция скачивает таблицу и сохраняет в /data"""
+    try:
+        print("Начинаю создание бэкапа...")
+        df = get_df_from_google_sheet(WORKSHEET_NAME)
+        # Формируем имя файла с текущей датой
+        date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
+        file_path = os.path.join(BACKUP_DIR, f"swimocean_backup_{date_str}.xlsx")
+
+        # Сохраняем в Excel
+        df.to_excel(file_path, index=False, engine='openpyxl')
+        print(f"Бэкап успешно сохранен: {file_path}")
+    except Exception as e:
+        print(f"Ошибка при создании бэкапа: {e}")
+
+
+def backup_job():
+    """Фоновая задача для бэкапа"""
+    while True:
+        create_backup()  # Делаем бэкап сразу при запуске бота
+        # Засыпаем на нужное количество дней (в секундах)
+        time.sleep(BACKUP_INTERVAL_DAYS * 24 * 60 * 60)
 
 
 # Проверка есть ли ID пользователя в общей базе
@@ -327,11 +356,42 @@ def handle_all_stat(message):
                    caption='Общая статистика')
 
 
-# # Запрос копии таблицы с метрами
-# @bot.message_handler(commands=['get_table'])
-# def
+# Запрос копии таблицы с метрами
+@bot.message_handler(commands=['get_table'])
+def handle_get_table(message):
+    user_key = get_user_key(message)
+    # Проверяем, есть ли пользователь в базе
+    if not user_key:
+        bot.reply_to(message, "У вас нет доступа к этой команде. Обратитесь к администратору.")
+        return
+
+    try:
+        df = get_df_from_google_sheet(WORKSHEET_NAME)
+
+        # Создаем Excel файл в оперативной памяти
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Метры')
+
+        # Обязательно "перематываем" файл в начало перед отправкой
+        output.seek(0)
+        # Задаем имя файла, которое увидит пользователь в Telegram
+        file_name = f"SwimOcean_Metres_{datetime.now().strftime('%d-%m-%Y')}.xlsx"
+        output.name = file_name
+
+        # Отправляем документ
+        bot.send_document(message.chat.id, document=output, caption="")
+
+    except Exception as e:
+        print(f"Ошибка выгрузки: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при формировании таблицы.")
+
 
 # Запуск бота
 if __name__ == '__main__':
     print("Bot is starting...")
+    # Запускаем бэкапы в отдельном фоновом потоке
+    backup_thread = threading.Thread(target=backup_job, daemon=True)
+    backup_thread.start()
+
     bot.polling(none_stop=True)
