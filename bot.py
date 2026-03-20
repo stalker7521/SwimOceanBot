@@ -30,7 +30,8 @@ def create_backup():
     max_retries = 3  # Количество попыток
     for attempt in range(max_retries):
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
             df = get_df_from_google_sheet(WORKSHEET_NAME)
             # Формируем имя файла с текущей датой
             date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
@@ -94,6 +95,9 @@ if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
 bot = telebot.TeleBot(TOKEN)
 
+# Светофор для защиты от конфликта потоков при работе с Google
+google_lock = threading.Lock()
+
 
 # Функция для подключения к Google Sheets
 def get_gsheet_client():
@@ -114,11 +118,13 @@ def get_gsheet_client():
 
 
 def get_df_from_google_sheet(sheet_name):
-    client = get_gsheet_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-    data = sheet.get_all_values()
-    df = pd.DataFrame(data, columns=data[0])[1:]
-    return df
+    # доступ к таблице через семафор для защиты от deadlock
+    with google_lock:
+        client = get_gsheet_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+        data = sheet.get_all_values()
+        df = pd.DataFrame(data, columns=data[0])[1:]
+        return df
 
 
 def get_statistics_for_period(start_date: str, end_date: str):
@@ -182,21 +188,23 @@ def get_sum_for_period(df):
 
 # Функция для записи данных в Google Sheets
 def write_to_sheet(value, usr_name, date):
-    try:
-        client = get_gsheet_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-        """Ищем строку с указанной датой"""
-        dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
+    # доступ к таблице через семафор для защиты от deadlock
+    with google_lock:
+        try:
+            client = get_gsheet_client()
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+            """Ищем строку с указанной датой"""
+            dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
-        usr_name = user_column_map[usr_name]  # вытаскиваем из словаря Имя пользователя по его tg-id
-        col_names = sheet.row_values(1)  # список всех имен пользователей
-        col_index = col_names.index(usr_name) + 1
-        row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
-        sheet.update_cell(row_num, col_index, value)  # добавляем в последнюю ячейку определенного столбца данные
-        print(f'Value "{value}" appended to sheet')
+            usr_name = user_column_map[usr_name]  # вытаскиваем из словаря Имя пользователя по его tg-id
+            col_names = sheet.row_values(1)  # список всех имен пользователей
+            col_index = col_names.index(usr_name) + 1
+            row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
+            sheet.update_cell(row_num, col_index, value)  # добавляем в последнюю ячейку определенного столбца данные
+            print(f'Value "{value}" appended to sheet')
 
-    except Exception as e:
-        print(f'An error occurred: {e}')
+        except Exception as e:
+            print(f'An error occurred: {e}')
 
 
 # Проверка есть ли ID пользователя в общей базе
@@ -434,7 +442,7 @@ def handle_get_table(message):
 if __name__ == '__main__':
     print("Bot is starting...")
     # Запускаем бэкапы в отдельном фоновом потоке
-    # backup_thread = threading.Thread(target=maintenance_job(), daemon=True)
-    # backup_thread.start()
-
-    bot.polling(none_stop=True)
+    backup_thread = threading.Thread(target=maintenance_job, daemon=True)
+    backup_thread.start()
+    # автоматический перезапуск бота при обрыве связи
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
