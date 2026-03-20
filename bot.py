@@ -18,10 +18,67 @@ from dotenv import load_dotenv  # для локальной работы env var
 
 load_dotenv()  # для локальной работы env var
 
-# Папка для бэкапов
+# Определяем пути и const для backup
 BACKUP_DIR = '/data' if os.path.exists('/') else './data'
 os.makedirs(BACKUP_DIR, exist_ok=True)
 BACKUP_INTERVAL_DAYS = 1
+BACKUP_RETENTION_DAYS = 14
+
+
+def create_backup():
+    """Функция скачивает таблицу и сохраняет в /data"""
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа...")
+        df = get_df_from_google_sheet(WORKSHEET_NAME)
+        # Формируем имя файла с текущей датой
+        date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
+        file_name = f"swimocean_backup_{date_str}.xlsx"
+        file_path = os.path.join(BACKUP_DIR, file_name)
+
+        # Сохраняем в Excel
+        df.to_excel(file_path, index=False, engine='openpyxl')
+        print(f"Бэкап успешно сохранен: {file_path}")
+    except Exception as e:
+        print(f"Ошибка при создании бэкапа: {e}")
+
+
+def cleanup_old_backups():
+    """Удаляет бэкапы, которые старше BACKUP_RETENTION_DAYS"""
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверка старых бэкапов...")
+        current_time = time.time()
+        # Вычисляем временную отсечку
+        cutoff_time = current_time - (BACKUP_RETENTION_DAYS * 24 * 60 * 60)
+        deleted_count = 0
+        for filename in os.listdir(BACKUP_DIR):
+            if filename.startswith("swimocean_backup_") and filename.endswith(".xlsx"):
+                file_path = os.path.join(BACKUP_DIR, filename)
+
+                # Проверяем время изменения файла
+                if os.path.isfile(file_path):
+                    file_mtime = os.path.getmtime(file_path)
+                    if file_mtime < cutoff_time:
+                        os.remove(file_path)
+                        print(f"Удален старый бэкап: {filename}")
+                        deleted_count += 1
+
+        if deleted_count == 0:
+            print("Старых бэкапов для удаления не найдено.")
+
+    except Exception as e:
+        print(f"Ошибка при очистке бэкапов: {e}")
+
+
+def maintenance_job():
+    """Фоновый процесс работы с backup"""
+    while True:
+        create_backup()
+
+        cleanup_old_backups()
+
+        time.sleep(BACKUP_INTERVAL_DAYS * 24 * 60 * 60)
+
+
 # Инициализация бота
 if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
@@ -130,30 +187,6 @@ def write_to_sheet(value, usr_name, date):
 
     except Exception as e:
         print(f'An error occurred: {e}')
-
-
-def create_backup():
-    """Функция скачивает таблицу и сохраняет в /data"""
-    try:
-        print("Начинаю создание бэкапа...")
-        df = get_df_from_google_sheet(WORKSHEET_NAME)
-        # Формируем имя файла с текущей датой
-        date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
-        file_path = os.path.join(BACKUP_DIR, f"swimocean_backup_{date_str}.xlsx")
-
-        # Сохраняем в Excel
-        df.to_excel(file_path, index=False, engine='openpyxl')
-        print(f"Бэкап успешно сохранен: {file_path}")
-    except Exception as e:
-        print(f"Ошибка при создании бэкапа: {e}")
-
-
-def backup_job():
-    """Фоновая задача для бэкапа"""
-    while True:
-        create_backup()  # Делаем бэкап сразу при запуске бота
-        # Засыпаем на нужное количество дней (в секундах)
-        time.sleep(BACKUP_INTERVAL_DAYS * 24 * 60 * 60)
 
 
 # Проверка есть ли ID пользователя в общей базе
@@ -391,7 +424,7 @@ def handle_get_table(message):
 if __name__ == '__main__':
     print("Bot is starting...")
     # Запускаем бэкапы в отдельном фоновом потоке
-    backup_thread = threading.Thread(target=backup_job, daemon=True)
+    backup_thread = threading.Thread(target=maintenance_job(), daemon=True)
     backup_thread.start()
 
     bot.polling(none_stop=True)
