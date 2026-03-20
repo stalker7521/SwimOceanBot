@@ -27,19 +27,27 @@ BACKUP_RETENTION_DAYS = 14
 
 def create_backup():
     """Функция скачивает таблицу и сохраняет в /data"""
-    try:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа...")
-        df = get_df_from_google_sheet(WORKSHEET_NAME)
-        # Формируем имя файла с текущей датой
-        date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
-        file_name = f"swimocean_backup_{date_str}.xlsx"
-        file_path = os.path.join(BACKUP_DIR, file_name)
+    max_retries = 3  # Количество попыток
+    for attempt in range(max_retries):
+        try:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
+            df = get_df_from_google_sheet(WORKSHEET_NAME)
+            # Формируем имя файла с текущей датой
+            date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
+            file_name = f"swimocean_backup_{date_str}.xlsx"
+            file_path = os.path.join(BACKUP_DIR, file_name)
 
-        # Сохраняем в Excel
-        df.to_excel(file_path, index=False, engine='openpyxl')
-        print(f"Бэкап успешно сохранен: {file_path}")
-    except Exception as e:
-        print(f"Ошибка при создании бэкапа: {e}")
+            # Сохраняем в Excel
+            df.to_excel(file_path, index=False, engine='openpyxl')
+            print(f"Бэкап успешно сохранен: {file_path}")
+            return
+        except Exception as e:
+            print(f"Ошибка при создании бэкапа: {e}")
+            if attempt < max_retries - 1:
+                print("Жду 10 секунд перед следующей попыткой...")
+                time.sleep(10)  # Ждем перед новой попыткой
+            else:
+                print("Не удалось создать бэкап после всех попыток. Следующий бэкап по расписанию.")
 
 
 def cleanup_old_backups():
@@ -71,6 +79,8 @@ def cleanup_old_backups():
 
 def maintenance_job():
     """Фоновый процесс работы с backup"""
+    print("Ожидание инициализации сети Amvera(15 секунд)")
+    time.sleep(15)  # даем сети время на подключение при старте сервера
     while True:
         create_backup()
 
