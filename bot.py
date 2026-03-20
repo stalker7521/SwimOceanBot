@@ -434,7 +434,7 @@ def handle_get_table(message):
 if __name__ == '__main__':
     print("Bot is starting...")
     # Запускаем бэкапы в отдельном фоновом потоке
-    backup_thread = threading.Thread(target=maintenance_job(), daemon=True)
-    backup_thread.start()
+    # backup_thread = threading.Thread(target=maintenance_job(), daemon=True)
+    # backup_thread.start()
 
     bot.polling(none_stop=True)
