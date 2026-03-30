@@ -6,7 +6,7 @@ authors = [
     {name = "stalker7521"}
 ]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 
 [tool.poetry]
 package-mode = false
@@ -19,7 +19,7 @@ dotenv = ">=0.9.9,<0.10.0"
 streamlit = ">=1.44.1,<2.0.0"
 pandas = "^2.3.0"
 matplotlib = "^3.10.3"
-
+python = "^3.11"
 
 
 [build-system]
