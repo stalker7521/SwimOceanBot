@@ -396,7 +396,9 @@ def handle_pstat(message):
 # Общая статистика
 @bot.message_handler(commands=['stat_all'])
 def handle_all_stat(message):
-    start_date = pd.to_datetime(START_DATE, dayfirst=True)
+    cur_month = datetime.now().month
+    cur_year = datetime.now().year
+    start_date = pd.to_datetime(f"01-{cur_month}-{cur_year}", dayfirst=True)
     today = datetime.now().date().strftime("%d.%m.%Y")
     today = pd.to_datetime(today, dayfirst=True)
     period_df = get_statistics_for_period(start_date=start_date,
@@ -404,7 +406,7 @@ def handle_all_stat(message):
     img = get_sum_for_period(period_df)
     bot.send_photo(chat_id=message.chat.id,
                    photo=img,
-                   caption='Общая статистика')
+                   caption='Общая статистика за текущий месяц')
 
 
 # Запрос копии таблицы с метрами

@@ -3,9 +3,12 @@
 .streamlit
 .github
 __pycache__/
+
+.vscode
 *.pyc
 photo/
 venv/
+/venv/
 creds/
 .venv/
 /creds/
