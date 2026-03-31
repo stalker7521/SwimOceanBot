@@ -1,44 +1,130 @@
-import json
+import base64
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
-import streamlit as st
 import pandas as pd
+import matplotlib
+
+matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 import matplotlib.pyplot as plt
-import telebot
 from telebot.types import ReactionTypeEmoji
-import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import os, json, telebot, gspread, threading, time
 from settings import (
     TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, user_column_map, SCOPE, START_DATE
 )
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv  # для локальной работы env var
+
+load_dotenv()  # для локальной работы env var
+
+# Определяем пути и const для backup
+BACKUP_DIR = '/data' if os.path.exists('/') else './data'
+os.makedirs(BACKUP_DIR, exist_ok=True)
+BACKUP_INTERVAL_DAYS = 1
+BACKUP_RETENTION_DAYS = 14
+
+
+def create_backup():
+    """Функция скачивает таблицу и сохраняет в /data"""
+    max_retries = 3  # Количество попыток
+    for attempt in range(max_retries):
+        try:
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
+            df = get_df_from_google_sheet(WORKSHEET_NAME)
+            # Формируем имя файла с текущей датой
+            date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
+            file_name = f"swimocean_backup_{date_str}.xlsx"
+            file_path = os.path.join(BACKUP_DIR, file_name)
+
+            # Сохраняем в Excel
+            df.to_excel(file_path, index=False, engine='openpyxl')
+            print(f"Бэкап успешно сохранен: {file_path}")
+            return
+        except Exception as e:
+            print(f"Ошибка при создании бэкапа: {e}")
+            if attempt < max_retries - 1:
+                print("Жду 10 секунд перед следующей попыткой...")
+                time.sleep(10)  # Ждем перед новой попыткой
+            else:
+                print("Не удалось создать бэкап после всех попыток. Следующий бэкап по расписанию.")
+
+
+def cleanup_old_backups():
+    """Удаляет бэкапы, которые старше BACKUP_RETENTION_DAYS"""
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверка старых бэкапов...")
+        current_time = time.time()
+        # Вычисляем временную отсечку
+        cutoff_time = current_time - (BACKUP_RETENTION_DAYS * 24 * 60 * 60)
+        deleted_count = 0
+        for filename in os.listdir(BACKUP_DIR):
+            if filename.startswith("swimocean_backup_") and filename.endswith(".xlsx"):
+                file_path = os.path.join(BACKUP_DIR, filename)
+
+                # Проверяем время изменения файла
+                if os.path.isfile(file_path):
+                    file_mtime = os.path.getmtime(file_path)
+                    if file_mtime < cutoff_time:
+                        os.remove(file_path)
+                        print(f"Удален старый бэкап: {filename}")
+                        deleted_count += 1
+
+        if deleted_count == 0:
+            print("Старых бэкапов для удаления не найдено.")
+
+    except Exception as e:
+        print(f"Ошибка при очистке бэкапов: {e}")
+
+
+def maintenance_job():
+    """Фоновый процесс работы с backup"""
+    print("Ожидание инициализации сети Amvera(15 секунд)")
+    time.sleep(15)  # даем сети время на подключение при старте сервера
+    while True:
+        create_backup()
+
+        cleanup_old_backups()
+
+        time.sleep(BACKUP_INTERVAL_DAYS * 24 * 60 * 60)
+
 
 # Инициализация бота
+if TOKEN is None:
+    raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
 bot = telebot.TeleBot(TOKEN)
+
+# Светофор для защиты от конфликта потоков при работе с Google
+google_lock = threading.Lock()
 
 
 # Функция для подключения к Google Sheets
 def get_gsheet_client():
-    cred_str = st.secrets['CREDS']
-    creds_obj = json.loads(cred_str)
-    tmp_dir = TemporaryDirectory()
-    tmp_dir_path = Path(tmp_dir.name)
-    json_path = tmp_dir_path / 'creds.json'
-    with open(json_path, 'w') as f:
-        f.write(json.dumps(creds_obj, indent=2))
-    creds = ServiceAccountCredentials.from_json_keyfile_name(json_path, SCOPE)
+    cred_str_b64 = os.environ.get('CREDS')
+    if not cred_str_b64:
+        raise ValueError("Переменная окружения CREDS не найдена!")
+
+    try:
+        # Декодируем из Base64 в обычную строку с кавычками
+        cred_str = base64.b64decode(cred_str_b64).decode('utf-8')
+        creds_dict = json.loads(cred_str)
+    except Exception as e:
+        raise ValueError(f"Ошибка декодирования CREDS: {e}")
+
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
     client = gspread.authorize(creds)
-    tmp_dir.cleanup()
     return client
 
 
 def get_df_from_google_sheet(sheet_name):
-    client = get_gsheet_client()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-    data = sheet.get_all_values()
-    df = pd.DataFrame(data, columns=data[0])[1:]
-    return df
+    # доступ к таблице через семафор для защиты от deadlock
+    with google_lock:
+        client = get_gsheet_client()
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+        data = sheet.get_all_values()
+        df = pd.DataFrame(data, columns=data[0])[1:]
+        return df
 
 
 def get_statistics_for_period(start_date: str, end_date: str):
@@ -46,7 +132,7 @@ def get_statistics_for_period(start_date: str, end_date: str):
     Возвращает статистики за выбранный период
     """
     df = get_df_from_google_sheet(WORKSHEET_NAME)
-    df['Date'] = pd.to_datetime(df['Date'])
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True)
     df = df.set_index('Date')
 
     for col in df.columns:
@@ -102,21 +188,23 @@ def get_sum_for_period(df):
 
 # Функция для записи данных в Google Sheets
 def write_to_sheet(value, usr_name, date):
-    try:
-        client = get_gsheet_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-        """Ищем строку с указанной датой"""
-        dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
+    # доступ к таблице через семафор для защиты от deadlock
+    with google_lock:
+        try:
+            client = get_gsheet_client()
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+            """Ищем строку с указанной датой"""
+            dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
-        usr_name = user_column_map[usr_name]  # вытаскиваем из словаря Имя пользователя по его tg-id
-        col_names = sheet.row_values(1)  # список всех имен пользователей
-        col_index = col_names.index(usr_name) + 1
-        row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
-        sheet.update_cell(row_num, col_index, value)  # добавляем в последнюю ячейку определенного столбца данные
-        print(f'Value "{value}" appended to sheet')
+            usr_name = user_column_map[usr_name]  # вытаскиваем из словаря Имя пользователя по его tg-id
+            col_names = sheet.row_values(1)  # список всех имен пользователей
+            col_index = col_names.index(usr_name) + 1
+            row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
+            sheet.update_cell(row_num, col_index, value)  # добавляем в последнюю ячейку определенного столбца данные
+            print(f'Value "{value}" appended to sheet')
 
-    except Exception as e:
-        print(f'An error occurred: {e}')
+        except Exception as e:
+            print(f'An error occurred: {e}')
 
 
 # Проверка есть ли ID пользователя в общей базе
@@ -279,19 +367,19 @@ def handle_pstat(message):
                                               end_date=today)
 
         sum_by_month = period_df[[user_name]].copy()
-        sum_by_month = sum_by_month.groupby(pd.Grouper(axis=0, freq='m')).sum()
+        sum_by_month = sum_by_month.groupby(pd.Grouper(freq='ME')).sum()
         sum_by_month = sum_by_month.astype(int)
         count_by_month = period_df[[user_name]].copy()
         count_by_month = count_by_month.replace(0, None).groupby(
-            pd.Grouper(axis=0, freq='m')
-            )
+            pd.Grouper(freq='ME')
+        )
         count_by_month = count_by_month.count()
 
         merged_df = pd.merge(left=sum_by_month, right=count_by_month, on='Date')
         merged_df = merged_df.reset_index()
         merged_df['Date'] = merged_df['Date'].apply(
             lambda x: get_month_name_and_year(x)
-            )
+        )
 
         data = [['Месяц', 'Объём, м', 'Кол-во']]
         data.extend(merged_df.values.tolist())
@@ -321,12 +409,42 @@ def handle_all_stat(message):
                    caption='Общая статистика за текущий месяц')
 
 
-# # Запрос копии таблицы с метрами
-# @bot.message_handler(commands=['get_table'])
-# def
+# Запрос копии таблицы с метрами
+@bot.message_handler(commands=['get_table'])
+def handle_get_table(message):
+    user_key = get_user_key(message)
+    # Проверяем, есть ли пользователь в базе
+    if not user_key:
+        bot.reply_to(message, "У вас нет доступа к этой команде. Обратитесь к администратору.")
+        return
+
+    try:
+        df = get_df_from_google_sheet(WORKSHEET_NAME)
+
+        # Создаем Excel файл в оперативной памяти
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Метры')
+
+        # Обязательно "перематываем" файл в начало перед отправкой
+        output.seek(0)
+        # Задаем имя файла, которое увидит пользователь в Telegram
+        file_name = f"SwimOcean_Metres_{datetime.now().strftime('%d-%m-%Y')}.xlsx"
+        output.name = file_name
+
+        # Отправляем документ
+        bot.send_document(message.chat.id, document=output, caption="")
+
+    except Exception as e:
+        print(f"Ошибка выгрузки: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при формировании таблицы.")
+
 
 # Запуск бота
 if __name__ == '__main__':
-    st.write('Bot is running...')
-    bot.polling(none_stop=True)
-    st.stop()
+    print("Bot is starting...")
+    # Запускаем бэкапы в отдельном фоновом потоке
+    backup_thread = threading.Thread(target=maintenance_job, daemon=True)
+    backup_thread.start()
+    # автоматический перезапуск бота при обрыве связи
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)

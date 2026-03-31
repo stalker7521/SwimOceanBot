@@ -1,13 +1,14 @@
-
 .idea/
 .env
 .streamlit
-
+.github
 __pycache__/
 
-
-/venv/
-.venv
-/creds/
-
 .vscode
+*.pyc
+photo/
+venv/
+/venv/
+creds/
+.venv/
+/creds/
