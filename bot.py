@@ -5,11 +5,15 @@ from pathlib import Path
 import pandas as pd
 import matplotlib
 
-matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 import matplotlib.pyplot as plt
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
-import os, json, telebot, gspread, threading, time
+import os
+import json
+import telebot
+import gspread
+import threading
+import time
 from settings import (
     TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, user_column_map, SCOPE, START_DATE
 )
@@ -25,6 +29,7 @@ BACKUP_DIR = '/data' if os.path.exists('/') else './data'
 os.makedirs(BACKUP_DIR, exist_ok=True)
 BACKUP_INTERVAL_DAYS = 1
 BACKUP_RETENTION_DAYS = 14
+matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 
 
 def create_backup():
@@ -32,8 +37,9 @@ def create_backup():
     max_retries = 3  # Количество попыток
     for attempt in range(max_retries):
         try:
+            cur_date = datetime.now().strftime('%H:%M:%S')
             print(
-                f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
+                f"[{cur_date}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
             df = get_df_from_google_sheet(WORKSHEET_NAME)
             # Формируем имя файла с текущей датой
             date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
@@ -201,7 +207,8 @@ def write_to_sheet(value, usr_name, date):
             """Ищем строку с указанной датой"""
             dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
-            usr_name = user_column_map[usr_name]  # вытаскиваем из словаря Имя пользователя по его tg-id
+            # вытаскиваем из словаря Имя пользователя по его tg-id
+            usr_name = user_column_map[usr_name]
             col_names = sheet.row_values(1)  # список всех имен пользователей
             col_index = col_names.index(usr_name) + 1
             row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
