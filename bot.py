@@ -312,6 +312,7 @@ def handle_number_message(message):
                                      reaction=[ReactionTypeEmoji("✍")]
                                      )
             logging.info(f'User {user_key} recorded {number} meters for date {date}')
+            logging.info(f'ChatID: {message.chat.id})')  # for new features in the future
         else:
             msg = ("Вас нет в таблице или вашего ID нет в общей базе. "
                    "Обратитесь к администратору бота")
