@@ -5,15 +5,21 @@ from pathlib import Path
 import pandas as pd
 import matplotlib
 
-matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 import matplotlib.pyplot as plt
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
-import os, json, telebot, gspread, threading, time
+import os
+import json
+import telebot
+import gspread
+import threading
+import time
 from settings import (
     TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, user_column_map, SCOPE, START_DATE
 )
+from constants import START_TEXT, HELP_TEXT
 from datetime import datetime, timezone, timedelta
+import logging
 from dotenv import load_dotenv  # для локальной работы env var
 
 load_dotenv()  # для локальной работы env var
@@ -23,6 +29,7 @@ BACKUP_DIR = '/data' if os.path.exists('/') else './data'
 os.makedirs(BACKUP_DIR, exist_ok=True)
 BACKUP_INTERVAL_DAYS = 1
 BACKUP_RETENTION_DAYS = 14
+matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 
 
 def create_backup():
@@ -30,8 +37,9 @@ def create_backup():
     max_retries = 3  # Количество попыток
     for attempt in range(max_retries):
         try:
+            cur_date = datetime.now().strftime('%H:%M:%S')
             print(
-                f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
+                f"[{cur_date}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
             df = get_df_from_google_sheet(WORKSHEET_NAME)
             # Формируем имя файла с текущей датой
             date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
@@ -94,6 +102,9 @@ def maintenance_job():
 if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
 bot = telebot.TeleBot(TOKEN)
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Светофор для защиты от конфликта потоков при работе с Google
 google_lock = threading.Lock()
@@ -196,15 +207,18 @@ def write_to_sheet(value, usr_name, date):
             """Ищем строку с указанной датой"""
             dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
-            usr_name = user_column_map[usr_name]  # вытаскиваем из словаря Имя пользователя по его tg-id
+            # вытаскиваем из словаря Имя пользователя по его tg-id
+            usr_name = user_column_map[usr_name]
             col_names = sheet.row_values(1)  # список всех имен пользователей
             col_index = col_names.index(usr_name) + 1
             row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
-            sheet.update_cell(row_num, col_index, value)  # добавляем в последнюю ячейку определенного столбца данные
-            print(f'Value "{value}" appended to sheet')
+
+            # добавляем в последнюю ячейку определенного столбца данные
+            sheet.update_cell(row_num, col_index, value)
+            logging.info(f'Value "{value}" for user {usr_name} appended to sheet')
 
         except Exception as e:
-            print(f'An error occurred: {e}')
+            logging.error(f'An error occurred: {e}')
 
 
 # Проверка есть ли ID пользователя в общей базе
@@ -238,7 +252,9 @@ def plus_message_handling(message):
 
 
 def plus_data_message_handing(message):
-    return plus_message_handling(message) and message.text.split()[0][1:].isdigit() and len(message.text.split()) == 2
+    return (plus_message_handling(message) and
+            message.text.split()[0][1:].isdigit() and
+            len(message.text.split()) == 2)
 
 
 # Обработчик сообщений вида: +метры дата_куда_нужно_записать_метры
@@ -256,13 +272,14 @@ def handle_number_with_data_message(message):
     if isValid and is_date_valid(date):
         user_key = get_user_key(message)
         if user_key:
-            print(f'ID пользователя, который ввел данные: {user_key}')
+            logging.info(f'ID пользователя, который ввел данные: {user_key}')
             write_to_sheet(number, user_key, date)  # записываем число в таблицу
             bot.reply_to(message, f'Число {number} было записано в дату: {date}')
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id,
                                      reaction=[ReactionTypeEmoji("✍")]
                                      )
+            logging.info(f'User {user_key} recorded {number} meters for date {date}')
         else:
             bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
     else:
@@ -278,19 +295,24 @@ def handle_number_message(message):
     number = message.text[1:]
     if plus_message_handling(message) and message.text[1:].isdigit():
         """
-        Извлекаем дату сообщения. Дата в формате unix timestamp. Прибавляем 18000 = 5 часов т.к. дата хранится в GMT+0
+        Извлекаем дату сообщения. Дата в формате unix timestamp.
+        Прибавляем 18000 = 5 часов т.к. дата хранится в GMT+0
         """
-        date_obj = datetime.fromtimestamp(message.date + 18000)  # Преобразовываем дату из unix timestamp в datetime obj
+        # Преобразовываем дату из unix timestamp в datetime obj
+        date_obj = datetime.fromtimestamp(message.date + 18000)
         date = date_obj.strftime("%d.%m.%Y")  # преобразуем в нормальный формат -> "13.04.2025"
         user_key = get_user_key(message)
         if user_key:
-            print(f'ID пользователя, который ввел данные: {user_key}')
+            logging.info(f'ID пользователя, который ввел данные: {user_key}')
+
             write_to_sheet(number, user_key, date)  # записываем число в таблицу
 
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id,
                                      reaction=[ReactionTypeEmoji("✍")]
                                      )
+            logging.info(f'User {user_key} recorded {number} meters for date {date}')
+            logging.info(f'ChatID: {message.chat.id})')  # for new features in the future
         else:
             msg = ("Вас нет в таблице или вашего ID нет в общей базе. "
                    "Обратитесь к администратору бота")
@@ -302,30 +324,83 @@ def handle_number_message(message):
         bot.reply_to(message, 'Команда введена неверно, ознакомьтесь с инструкцией в /help')
 
 
+# Обработчик отредактированных сообщений, содержащих записи в формате +<метры> [дата]
+@bot.edited_message_handler(func=lambda m: hasattr(m, 'text') and m.text and m.text.startswith('+'))
+def handle_edited_plus_message(message):
+    try:
+        logging.info(
+            f'Processing edited message from user {message.from_user.id}: "{message.text}"'
+            )
+        # Повторяем логику для двух форматов сообщений: +<метры дата> и +<метры>
+        if plus_data_message_handing(message):
+            number = message.text.split()[0][1:]
+            date = str(message.text.split()[1])
+            pattern_of_date = "%d.%m.%Y"
+            isValid = True
+            try:
+                isValid = bool(datetime.strptime(date, pattern_of_date))
+            except ValueError:
+                isValid = False
+            if isValid and is_date_valid(date):
+                user_key = get_user_key(message)
+                if user_key:
+                    logging.info(f'User {user_key} edited record: {number} meters for date {date}')
+                    write_to_sheet(number, user_key, date)
+                    bot.reply_to(
+                        message,
+                        f'Отредактировано: число {number} записано в дату: {date}'
+                        )
+                    bot.set_message_reaction(chat_id=message.chat.id,
+                                             message_id=message.id,
+                                             reaction=[ReactionTypeEmoji("✍")]
+                                             )
+                else:
+                    bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
+            else:
+                bot.set_message_reaction(chat_id=message.chat.id,
+                                         message_id=message.id,
+                                         reaction=[ReactionTypeEmoji("👎")])
+                bot.reply_to(message, 'Дата введена неверно, ознакомьтесь с инструкцией в /help')
+
+        elif plus_message_handling(message) and message.text[1:].isdigit():
+            number = message.text[1:]
+            # Дату берем так же, как при первоначальном сохранении
+            date_obj = datetime.fromtimestamp(message.date + 18000)
+            date = date_obj.strftime("%d.%m.%Y")
+            user_key = get_user_key(message)
+            if user_key:
+                logging.info(f'User {user_key} edited record: {number} meters for date {date}')
+                write_to_sheet(number, user_key, date)
+                bot.reply_to(message, f'Отредактировано: число {number} записано в дату: {date}')
+                bot.set_message_reaction(chat_id=message.chat.id,
+                                         message_id=message.id,
+                                         reaction=[ReactionTypeEmoji("✍")]
+                                         )
+            else:
+                bot.reply_to(message, ("Вас нет в таблице или вашего ID нет в общей базе. "
+                                       "Обратитесь к администратору бота"))
+        else:
+            bot.set_message_reaction(
+                chat_id=message.chat.id,
+                message_id=message.id,
+                reaction=[ReactionTypeEmoji("👎")]
+                )
+            bot.reply_to(message, 'Команда введена неверно, ознакомьтесь с инструкцией в /help')
+            return
+    except Exception as e:
+        logging.error(f'Error handling edited message: {e}')
+
+
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
 def handle_start(message):
-    bot.reply_to(message, "Привет! Я бот клуба SwimOcean, который следит, чтобы все проплытые метры были учтены в "
-                          "наших заплывах! "
-                          "Чтобы увидеть список команд, которые я понимаю, и формат, "
-                          "в котором нужно записывать метры, введите команду /help .\n"
-                          "Чтобы посмотреть, где мы плывем, перейди по ссылке: https://swimocean.streamlit.app/")
+    bot.reply_to(message, START_TEXT)
 
 
 # Обработчик команды /help
 @bot.message_handler(commands=['help'])
 def handle_help(message):
-    bot.reply_to(message, "Ссылка для просмотра нашего местоположения: https://swimocean.streamlit.app/ \n"
-                          "Расстояние нужно писать исключительно в виде метров.\n"
-                          "Запись в даты в будущем невозможна.\n"
-                          "Список команд и правил записи:\n\n"
-                          "+<кол-во_метров> - записать метры (пример: +1000)\n"
-                          "+<кол-во_метров дата> - записать в прошедшую дату\n (пример: +100 19.04.2025)\n\n"
-                          "Существующие команды:\n"
-                          "/start - вызов стартового сообщения\n"
-                          "/help - вызов справки\n"
-                          "/stat_my - вывод персональной статистики за весь период по месяцам\n"
-                          "/stat_all - показ общей статистики")
+    bot.reply_to(message, HELP_TEXT)
 
 
 def get_month_name_and_year(date) -> str:
