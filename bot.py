@@ -279,8 +279,9 @@ def handle_number_with_data_message(message):
                                      message_id=message.id,
                                      reaction=[ReactionTypeEmoji("✍")]
                                      )
-            logging.info(f'User {user_key} recorded {number} meters for date {date}')
+            
         else:
+            logging.info(f'ID пользователя, который попытался ввести данные: {user_key}')
             bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
     else:
         bot.set_message_reaction(chat_id=message.chat.id,
@@ -355,6 +356,7 @@ def handle_edited_plus_message(message):
                                              reaction=[ReactionTypeEmoji("✍")]
                                              )
                 else:
+                    
                     bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
             else:
                 bot.set_message_reaction(chat_id=message.chat.id,
