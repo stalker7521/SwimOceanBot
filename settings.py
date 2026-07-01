@@ -1,8 +1,7 @@
-import json, os, base64
+import os
 from dotenv import load_dotenv  # для локальной работы env var
+from cryptography.fernet import Fernet
 
-# /todo ДОБАВИТЬ ФУНКЦИЮ АВТОМАТИЧЕСКОГО ПЕРЕСЧЕТА СЕКРЕТА
-# ИЗ JSON В BASE64
 load_dotenv()
 
 # --- TOKEN ---
@@ -15,25 +14,26 @@ SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID')
 if not SPREADSHEET_ID:
     raise ValueError("CRITICAL ERROR: SPREADSHEET_ID не найден!")
 
-# --- USER_COLUMN_MAP ---
-raw_map_b64 = os.environ.get('USER_COLUMN_MAP')
-user_column_map = {}
-if not raw_map_b64:
-    raise ValueError("CRITICAL ERROR: Переменная окружения USER_COLUMN_MAP не найдена!")
+# --- ENCRYPTION_KEY ---
+ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY')
+if not ENCRYPTION_KEY:
+    raise ValueError("CRITICAL ERROR: ENCRYPTION_KEY не найден!")
+fernet = Fernet(ENCRYPTION_KEY.encode())
 
-try:
-    # Лечение выравнивания base64
-    raw_map_b64 += "=" * ((4 - len(raw_map_b64) % 4) % 4)
 
-    # Декодируем из Base64 в строку
-    raw_map_str = base64.b64decode(raw_map_b64).decode('utf-8')
+def encrypt_data(data: str) -> str:
+    """Шифрует строку"""
+    return fernet.encrypt(data.encode()).decode()
 
-    user_column_map = json.loads(raw_map_str)
-    if not isinstance(user_column_map, dict):
-        raise TypeError(f"Ожидался словарь (dict), а получен {type(user_column_map)}")
 
-except Exception as e:
-    raise ValueError(f"CRITICAL ERROR при обработке USER_COLUMN_MAP: {e}")
+def decrypt_data(encrypted_data: str) -> str:
+    """Расшифровывает строку"""
+    try:
+        return fernet.decrypt(encrypted_data.encode()).decode()
+    except Exception:
+        return "DECRYPTION_ERROR"
+
+
 WORKSHEET_NAME = 'МетрыV2'
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets']
 START_DATE = '13-01-2025'

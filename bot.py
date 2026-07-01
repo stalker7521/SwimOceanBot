@@ -5,31 +5,29 @@ from pathlib import Path
 import pandas as pd
 import matplotlib
 
-import matplotlib.pyplot as plt
+from datetime import datetime, timezone, timedelta
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
-import os
-import json
-import telebot
-import gspread
-import threading
-import time
-from settings import (
-    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, user_column_map, SCOPE, START_DATE
-)
-from constants import START_TEXT, HELP_TEXT
-from datetime import datetime, timezone, timedelta
-import logging
 from dotenv import load_dotenv  # для локальной работы env var
+import os, json, telebot, gspread, threading, time, logging
+import matplotlib.pyplot as plt
+matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
+from constants import START_TEXT, HELP_TEXT
+
+from settings import (
+    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data
+)
+
 
 load_dotenv()  # для локальной работы env var
 
+# -----------------------------------------------------------------------
 # Определяем пути и const для backup
 BACKUP_DIR = '/data' if os.path.exists('/') else './data'
 os.makedirs(BACKUP_DIR, exist_ok=True)
 BACKUP_INTERVAL_DAYS = 1
 BACKUP_RETENTION_DAYS = 14
-matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
+user_column_map = {}
 
 
 def create_backup():
@@ -39,15 +37,18 @@ def create_backup():
         try:
             cur_date = datetime.now().strftime('%H:%M:%S')
             print(
-                f"[{cur_date}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
-            df = get_df_from_google_sheet(WORKSHEET_NAME)
+                f"[{datetime.now().strftime('%H:%M:%S')}] Начинаю создание бэкапа (Попытка {attempt + 1}/{max_retries})...")
+            df_meters = get_df_from_google_sheet(WORKSHEET_NAME)
+            df_users = get_df_from_google_sheet("UsersDB")
             # Формируем имя файла с текущей датой
             date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
             file_name = f"swimocean_backup_{date_str}.xlsx"
             file_path = os.path.join(BACKUP_DIR, file_name)
 
             # Сохраняем в Excel
-            df.to_excel(file_path, index=False, engine='openpyxl')
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                df_meters.to_excel(writer, sheet_name='Метры', index=False)
+                df_users.to_excel(writer, sheet_name='UsersDB', index=False)
             print(f"Бэкап успешно сохранен: {file_path}")
             return
         except Exception as e:
@@ -98,6 +99,7 @@ def maintenance_job():
         time.sleep(BACKUP_INTERVAL_DAYS * 24 * 60 * 60)
 
 
+# -----------------------------------------------------------------------
 # Инициализация бота
 if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
@@ -128,11 +130,36 @@ def get_gsheet_client():
     return client
 
 
+def load_users_from_sheet():
+    global user_column_map
+    with google_lock:
+        try:
+            client = get_gsheet_client()
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("UsersDB")
+            records = sheet.get_all_records()  # Получаем список словарей
+
+            new_map = {}
+            for row in records:
+                enc_tg_id = str(row.get('Telegram_ID', ''))
+                enc_name = str(row.get('Full_Name', ''))
+
+                if enc_tg_id and enc_name:
+                    tg_id = decrypt_data(enc_tg_id)
+                    name = decrypt_data(enc_name)
+                    if tg_id != "DECRYPTION_ERROR":
+                        new_map[tg_id] = name
+
+            user_column_map = new_map
+            print(f" База пользователей загружена и расшифрована. Пользователей: {len(user_column_map)}")
+        except Exception as e:
+            print(f" Ошибка загрузки базы пользователей: {e}")
+
+
 def get_df_from_google_sheet(sheet_name):
     # доступ к таблице через семафор для защиты от deadlock
     with google_lock:
         client = get_gsheet_client()
-        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+        sheet = client.open_by_key(SPREADSHEET_ID).worksheet(sheet_name)
         data = sheet.get_all_values()
         df = pd.DataFrame(data, columns=data[0])[1:]
         return df
@@ -231,6 +258,7 @@ def get_user_key(message):
         username = message.from_user.username
         if username in user_column_map.keys():
             return username
+        return None
     else:
         user_frst_name = message.from_user.first_name
         if user_frst_name in user_column_map.keys():
@@ -264,12 +292,12 @@ def handle_number_with_data_message(message):
     date = str(message.text.split()[1])
     # Блок проверки валидности вводимой даты
     pattern_of_date = "%d.%m.%Y"  # паттерн правильной даты
-    isValid = True
+    is_valid = True
     try:
-        isValid = bool(datetime.strptime(date, pattern_of_date))
+        is_valid = bool(datetime.strptime(date, pattern_of_date))
     except ValueError:
-        isValid = False
-    if isValid and is_date_valid(date):
+        is_valid = False
+    if is_valid and is_date_valid(date):
         user_key = get_user_key(message)
         if user_key:
             logging.info(f'ID пользователя, который ввел данные: {user_key}')
@@ -523,5 +551,6 @@ if __name__ == '__main__':
     # Запускаем бэкапы в отдельном фоновом потоке
     backup_thread = threading.Thread(target=maintenance_job, daemon=True)
     backup_thread.start()
+    load_users_from_sheet()
     # автоматический перезапуск бота при обрыве связи
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
