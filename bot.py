@@ -9,22 +9,20 @@ from datetime import datetime, timezone, timedelta
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv  # для локальной работы env var
-import os, json, telebot, gspread, threading, time, logging
+import os, json, telebot, gspread, threading, time, logging, db
 import matplotlib.pyplot as plt
+
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 from constants import START_TEXT, HELP_TEXT
 
 from settings import (
-    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data
+    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data, DATA_DIR
 )
 
-
 load_dotenv()  # для локальной работы env var
-
+db.init_db()  # инициализируем локальную БД
 # -----------------------------------------------------------------------
-# Определяем пути и const для backup
-BACKUP_DIR = '/data' if os.path.exists('/') else './data'
-os.makedirs(BACKUP_DIR, exist_ok=True)
+# Определяем const для backup
 BACKUP_INTERVAL_DAYS = 1
 BACKUP_RETENTION_DAYS = 14
 user_column_map = {}
@@ -43,7 +41,7 @@ def create_backup():
             # Формируем имя файла с текущей датой
             date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
             file_name = f"swimocean_backup_{date_str}.xlsx"
-            file_path = os.path.join(BACKUP_DIR, file_name)
+            file_path = os.path.join(DATA_DIR, file_name)
 
             # Сохраняем в Excel
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -68,9 +66,9 @@ def cleanup_old_backups():
         # Вычисляем временную отсечку
         cutoff_time = current_time - (BACKUP_RETENTION_DAYS * 24 * 60 * 60)
         deleted_count = 0
-        for filename in os.listdir(BACKUP_DIR):
+        for filename in os.listdir(DATA_DIR):
             if filename.startswith("swimocean_backup_") and filename.endswith(".xlsx"):
-                file_path = os.path.join(BACKUP_DIR, filename)
+                file_path = os.path.join(DATA_DIR, filename)
 
                 # Проверяем время изменения файла
                 if os.path.isfile(file_path):
@@ -225,13 +223,15 @@ def get_sum_for_period(df):
 
 
 # Функция для записи данных в Google Sheets
-def write_to_sheet(value, usr_name, date):
+def update_sheet_meters(delta, usr_name, date):
+    """Прибавляет delta к текущему значению в ячейке"""
+
     # доступ к таблице через семафор для защиты от deadlock
     with google_lock:
         try:
             client = get_gsheet_client()
             sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-            """Ищем строку с указанной датой"""
+            # Ищем строку с указанной датой
             dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
             # вытаскиваем из словаря Имя пользователя по его tg-id
@@ -240,9 +240,20 @@ def write_to_sheet(value, usr_name, date):
             col_index = col_names.index(usr_name) + 1
             row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
 
+            # Читаем текущее значение ячейки
+            current_val_str = sheet.cell(row_num, col_index).value
+
+            # Превращаем в число
+            try:
+                current_val = int(current_val_str) if current_val_str else 0
+            except ValueError:
+                current_val = 0
+
+            # Считаем новую сумму
+            new_val = current_val + delta
             # добавляем в последнюю ячейку определенного столбца данные
-            sheet.update_cell(row_num, col_index, value)
-            logging.info(f'Value "{value}" for user {usr_name} appended to sheet')
+            sheet.update_cell(row_num, col_index, new_val)
+            logging.info(f'The cell  has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {usr_name}')
 
         except Exception as e:
             logging.error(f'An error occurred: {e}')
@@ -301,13 +312,13 @@ def handle_number_with_data_message(message):
         user_key = get_user_key(message)
         if user_key:
             logging.info(f'ID пользователя, который ввел данные: {user_key}')
-            write_to_sheet(number, user_key, date)  # записываем число в таблицу
+            update_sheet_meters(number, user_key, date)  # записываем число в таблицу
             bot.reply_to(message, f'Число {number} было записано в дату: {date}')
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id,
                                      reaction=[ReactionTypeEmoji("✍")]
                                      )
-            
+
         else:
             logging.info(f'ID пользователя, который попытался ввести данные: {user_key}')
             bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
@@ -334,7 +345,7 @@ def handle_number_message(message):
         if user_key:
             logging.info(f'ID пользователя, который ввел данные: {user_key}')
 
-            write_to_sheet(number, user_key, date)  # записываем число в таблицу
+            update_sheet_meters(number, user_key, date)  # записываем число в таблицу
 
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id,
@@ -359,7 +370,7 @@ def handle_edited_plus_message(message):
     try:
         logging.info(
             f'Processing edited message from user {message.from_user.id}: "{message.text}"'
-            )
+        )
         # Повторяем логику для двух форматов сообщений: +<метры дата> и +<метры>
         if plus_data_message_handing(message):
             number = message.text.split()[0][1:]
@@ -374,17 +385,17 @@ def handle_edited_plus_message(message):
                 user_key = get_user_key(message)
                 if user_key:
                     logging.info(f'User {user_key} edited record: {number} meters for date {date}')
-                    write_to_sheet(number, user_key, date)
+                    update_sheet_meters(number, user_key, date)
                     bot.reply_to(
                         message,
                         f'Отредактировано: число {number} записано в дату: {date}'
-                        )
+                    )
                     bot.set_message_reaction(chat_id=message.chat.id,
                                              message_id=message.id,
                                              reaction=[ReactionTypeEmoji("✍")]
                                              )
                 else:
-                    
+
                     bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
             else:
                 bot.set_message_reaction(chat_id=message.chat.id,
@@ -400,7 +411,7 @@ def handle_edited_plus_message(message):
             user_key = get_user_key(message)
             if user_key:
                 logging.info(f'User {user_key} edited record: {number} meters for date {date}')
-                write_to_sheet(number, user_key, date)
+                update_sheet_meters(number, user_key, date)
                 bot.reply_to(message, f'Отредактировано: число {number} записано в дату: {date}')
                 bot.set_message_reaction(chat_id=message.chat.id,
                                          message_id=message.id,
@@ -414,7 +425,7 @@ def handle_edited_plus_message(message):
                 chat_id=message.chat.id,
                 message_id=message.id,
                 reaction=[ReactionTypeEmoji("👎")]
-                )
+            )
             bot.reply_to(message, 'Команда введена неверно, ознакомьтесь с инструкцией в /help')
             return
     except Exception as e:
