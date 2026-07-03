@@ -406,7 +406,7 @@ def handle_edited_plus_message(message):
 
         # Формат "+<метры>" (без даты)
         elif plus_message_handling(message) and message.text[1:].isdigit():
-            new_number = message.text[1:]
+            new_number = int(message.text[1:])
             # Дату берем так же, как при первоначальном сохранении
             date_obj = datetime.fromtimestamp(message.date + 18000)
             date = date_obj.strftime("%d.%m.%Y")
