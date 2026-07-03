@@ -37,3 +37,7 @@ def decrypt_data(encrypted_data: str) -> str:
 WORKSHEET_NAME = 'МетрыV2'
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets']
 START_DATE = '13-01-2025'
+
+# Папка для данных и бэкапов
+DATA_DIR = '/data' if os.path.exists('/') else './data'
+os.makedirs(DATA_DIR, exist_ok=True)

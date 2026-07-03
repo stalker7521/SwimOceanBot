@@ -9,22 +9,20 @@ from datetime import datetime, timezone, timedelta
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv  # для локальной работы env var
-import os, json, telebot, gspread, threading, time, logging
+import os, json, telebot, gspread, threading, time, logging, db
 import matplotlib.pyplot as plt
+
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 from constants import START_TEXT, HELP_TEXT
 
 from settings import (
-    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data
+    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data, DATA_DIR
 )
 
-
 load_dotenv()  # для локальной работы env var
-
+db.init_db()  # инициализируем локальную БД
 # -----------------------------------------------------------------------
-# Определяем пути и const для backup
-BACKUP_DIR = '/data' if os.path.exists('/') else './data'
-os.makedirs(BACKUP_DIR, exist_ok=True)
+# Определяем const для backup
 BACKUP_INTERVAL_DAYS = 1
 BACKUP_RETENTION_DAYS = 14
 user_column_map = {}
@@ -43,7 +41,7 @@ def create_backup():
             # Формируем имя файла с текущей датой
             date_str = datetime.now().strftime("%H-%M_%d-%m-%Y")
             file_name = f"swimocean_backup_{date_str}.xlsx"
-            file_path = os.path.join(BACKUP_DIR, file_name)
+            file_path = os.path.join(DATA_DIR, file_name)
 
             # Сохраняем в Excel
             with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -68,9 +66,9 @@ def cleanup_old_backups():
         # Вычисляем временную отсечку
         cutoff_time = current_time - (BACKUP_RETENTION_DAYS * 24 * 60 * 60)
         deleted_count = 0
-        for filename in os.listdir(BACKUP_DIR):
+        for filename in os.listdir(DATA_DIR):
             if filename.startswith("swimocean_backup_") and filename.endswith(".xlsx"):
-                file_path = os.path.join(BACKUP_DIR, filename)
+                file_path = os.path.join(DATA_DIR, filename)
 
                 # Проверяем время изменения файла
                 if os.path.isfile(file_path):
@@ -225,13 +223,15 @@ def get_sum_for_period(df):
 
 
 # Функция для записи данных в Google Sheets
-def write_to_sheet(value, usr_name, date):
+def update_sheet_meters(delta, usr_name, date):
+    """Прибавляет delta к текущему значению в ячейке"""
+
     # доступ к таблице через семафор для защиты от deadlock
     with google_lock:
         try:
             client = get_gsheet_client()
             sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-            """Ищем строку с указанной датой"""
+            # Ищем строку с указанной датой
             dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
             # вытаскиваем из словаря Имя пользователя по его tg-id
@@ -240,9 +240,21 @@ def write_to_sheet(value, usr_name, date):
             col_index = col_names.index(usr_name) + 1
             row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
 
+            # Читаем текущее значение ячейки
+            current_val_str = sheet.cell(row_num, col_index).value
+
+            # Превращаем в число
+            try:
+                current_val = int(current_val_str) if current_val_str else 0
+            except ValueError:
+                current_val = 0
+
+            # Считаем новую сумму
+            new_val = current_val + delta
             # добавляем в последнюю ячейку определенного столбца данные
-            sheet.update_cell(row_num, col_index, value)
-            logging.info(f'Value "{value}" for user {usr_name} appended to sheet')
+            sheet.update_cell(row_num, col_index, new_val)
+            logging.info(f'The cell  has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {usr_name}')
+            return new_val  # Возвращаем итоговое значение, чтобы показать юзеру
 
         except Exception as e:
             logging.error(f'An error occurred: {e}')
@@ -285,72 +297,80 @@ def plus_data_message_handing(message):
             len(message.text.split()) == 2)
 
 
-# Обработчик сообщений вида: +метры дата_куда_нужно_записать_метры
-@bot.message_handler(func=plus_data_message_handing)
-def handle_number_with_data_message(message):
-    number = message.text.split()[0][1:]
-    date = str(message.text.split()[1])
-    # Блок проверки валидности вводимой даты
-    pattern_of_date = "%d.%m.%Y"  # паттерн правильной даты
-    is_valid = True
+# Объединенный обработчик для всех новых сообщений с плюсом
+@bot.message_handler(func=lambda m: hasattr(m, 'text') and m.text and m.text.startswith('+'))
+def handle_new_plus_message(message):
     try:
-        is_valid = bool(datetime.strptime(date, pattern_of_date))
-    except ValueError:
-        is_valid = False
-    if is_valid and is_date_valid(date):
-        user_key = get_user_key(message)
-        if user_key:
-            logging.info(f'ID пользователя, который ввел данные: {user_key}')
-            write_to_sheet(number, user_key, date)  # записываем число в таблицу
-            bot.reply_to(message, f'Число {number} было записано в дату: {date}')
-            bot.set_message_reaction(chat_id=message.chat.id,
-                                     message_id=message.id,
-                                     reaction=[ReactionTypeEmoji("✍")]
-                                     )
-            
+        number = 0
+        date = ""
+
+        # ==========================================
+        # парсинг и проверка даты
+        # ==========================================
+
+        # Формат "+<метры> <дата>"
+        if plus_data_message_handing(message):
+            number = int(message.text.split()[0][1:])
+            date = str(message.text.split()[1])
+
+            isValid = True
+            try:
+                isValid = bool(datetime.strptime(date, "%d.%m.%Y"))
+            except ValueError:
+                isValid = False
+
+            if not (isValid and is_date_valid(date)):
+                bot.set_message_reaction(message.chat.id, message.id, [ReactionTypeEmoji("👎")])
+                return bot.reply_to(message, 'Дата введена неверно, ознакомьтесь с инструкцией в /help')
+
+        # Формат "+<метры>" (без даты)
+        elif plus_message_handling(message) and message.text[1:].isdigit():
+            number = int(message.text[1:])
+            date_obj = datetime.fromtimestamp(message.date + 18000)
+            date = date_obj.strftime("%d.%m.%Y")
+
+        # Формат в корне не верен
         else:
-            logging.info(f'ID пользователя, который попытался ввести данные: {user_key}')
-            bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
-    else:
-        bot.set_message_reaction(chat_id=message.chat.id,
-                                 message_id=message.id,
-                                 reaction=[ReactionTypeEmoji("👎")])
-        bot.reply_to(message, 'Дата введена неверно, ознакомьтесь с инструкцией в /help')
+            bot.set_message_reaction(message.chat.id, message.id, [ReactionTypeEmoji("👎")])
+            return bot.reply_to(message, 'Команда введена неверно, инструкция в /help')
 
-
-# Обработчик сообщений, начинающихся с "+" и числа
-@bot.message_handler(func=plus_message_handling)
-def handle_number_message(message):
-    number = message.text[1:]
-    if plus_message_handling(message) and message.text[1:].isdigit():
-        """
-        Извлекаем дату сообщения. Дата в формате unix timestamp.
-        Прибавляем 18000 = 5 часов т.к. дата хранится в GMT+0
-        """
-        # Преобразовываем дату из unix timestamp в datetime obj
-        date_obj = datetime.fromtimestamp(message.date + 18000)
-        date = date_obj.strftime("%d.%m.%Y")  # преобразуем в нормальный формат -> "13.04.2025"
+        # ==========================================
+        # Проверка пользователя
+        # ==========================================
         user_key = get_user_key(message)
-        if user_key:
-            logging.info(f'ID пользователя, который ввел данные: {user_key}')
+        if not user_key:
+            return bot.reply_to(message, "Вас нет в таблице. Обратитесь к администратору.")
 
-            write_to_sheet(number, user_key, date)  # записываем число в таблицу
+        # ==========================================
+        # Работа с БД и google Таблицей
+        # ==========================================
 
-            bot.set_message_reaction(chat_id=message.chat.id,
-                                     message_id=message.id,
-                                     reaction=[ReactionTypeEmoji("✍")]
-                                     )
-            logging.info(f'User {user_key} recorded {number} meters for date {date}')
-            logging.info(f'ChatID: {message.chat.id})')  # for new features in the future
-        else:
-            msg = ("Вас нет в таблице или вашего ID нет в общей базе. "
-                   "Обратитесь к администратору бота")
-            bot.reply_to(message, msg)
-    else:
-        bot.set_message_reaction(chat_id=message.chat.id,
-                                 message_id=message.id,
-                                 reaction=[ReactionTypeEmoji("👎")])
-        bot.reply_to(message, 'Команда введена неверно, ознакомьтесь с инструкцией в /help')
+        # Записываем новое сообщение в локальную базу
+        db.save_message(message.message_id, message.chat.id, user_key, date, number)
+
+        # Отправляем метры в Google Таблицу
+        new_total = update_sheet_meters(number, user_key, date)
+
+        if new_total is None:
+            return bot.reply_to(message, "Ошибка при сохранении в Google Таблицу.")
+
+        # ==========================================
+        # Обратная связь пользователю
+        # ==========================================
+
+        # Ставим эмодзи в любом случае
+        bot.set_message_reaction(message.chat.id, message.id, [ReactionTypeEmoji("✍")])
+
+        workouts_count = db.get_workouts_count(user_key, date)
+
+        # Если тренировок больше одной - пишем текст
+        if workouts_count > 1:
+            bot.reply_to(message, f'За день проплыто {new_total} м.')
+
+        logging.info(f'User {user_key} added {number}m for {date}. Total workouts today: {workouts_count}')
+
+    except Exception as e:
+        logging.error(f'Error handling new message: {e}')
 
 
 # Обработчик отредактированных сообщений, содержащих записи в формате +<метры> [дата]
@@ -359,10 +379,17 @@ def handle_edited_plus_message(message):
     try:
         logging.info(
             f'Processing edited message from user {message.from_user.id}: "{message.text}"'
-            )
-        # Повторяем логику для двух форматов сообщений: +<метры дата> и +<метры>
+        )
+        new_number = 0
+        date = ""
+
+        # =======================================
+        # Блок 1: парсинг и проверки формата и даты
+        # =========================================
+
+        # Формат "+<метры> <дата>"
         if plus_data_message_handing(message):
-            number = message.text.split()[0][1:]
+            number = int(message.text.split()[0][1:])
             date = str(message.text.split()[1])
             pattern_of_date = "%d.%m.%Y"
             isValid = True
@@ -370,53 +397,73 @@ def handle_edited_plus_message(message):
                 isValid = bool(datetime.strptime(date, pattern_of_date))
             except ValueError:
                 isValid = False
-            if isValid and is_date_valid(date):
-                user_key = get_user_key(message)
-                if user_key:
-                    logging.info(f'User {user_key} edited record: {number} meters for date {date}')
-                    write_to_sheet(number, user_key, date)
-                    bot.reply_to(
-                        message,
-                        f'Отредактировано: число {number} записано в дату: {date}'
-                        )
-                    bot.set_message_reaction(chat_id=message.chat.id,
-                                             message_id=message.id,
-                                             reaction=[ReactionTypeEmoji("✍")]
-                                             )
-                else:
-                    
-                    bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
-            else:
+            if not (isValid and is_date_valid(date)):
                 bot.set_message_reaction(chat_id=message.chat.id,
                                          message_id=message.id,
                                          reaction=[ReactionTypeEmoji("👎")])
                 bot.reply_to(message, 'Дата введена неверно, ознакомьтесь с инструкцией в /help')
+                return  # прерываем функцию если дата имеет неверный формат
 
+        # Формат "+<метры>" (без даты)
         elif plus_message_handling(message) and message.text[1:].isdigit():
             number = message.text[1:]
             # Дату берем так же, как при первоначальном сохранении
             date_obj = datetime.fromtimestamp(message.date + 18000)
             date = date_obj.strftime("%d.%m.%Y")
-            user_key = get_user_key(message)
-            if user_key:
-                logging.info(f'User {user_key} edited record: {number} meters for date {date}')
-                write_to_sheet(number, user_key, date)
-                bot.reply_to(message, f'Отредактировано: число {number} записано в дату: {date}')
-                bot.set_message_reaction(chat_id=message.chat.id,
-                                         message_id=message.id,
-                                         reaction=[ReactionTypeEmoji("✍")]
-                                         )
-            else:
-                bot.reply_to(message, ("Вас нет в таблице или вашего ID нет в общей базе. "
-                                       "Обратитесь к администратору бота"))
+
+        # Формат сообщения в корне не верен
         else:
             bot.set_message_reaction(
                 chat_id=message.chat.id,
                 message_id=message.id,
                 reaction=[ReactionTypeEmoji("👎")]
-                )
+            )
             bot.reply_to(message, 'Команда введена неверно, ознакомьтесь с инструкцией в /help')
             return
+
+        # ==========================================
+        # БЛОК 2: проверка пользователя
+        # ==========================================
+        user_key = get_user_key(message)
+        if not user_key:
+            bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе. Обратитесь к администратору.")
+            return
+
+        # ==========================================
+        # БЛОК 3: работа с БД
+        # ==========================================
+
+        # Достаем старое значение из нашей sqlite БД
+        old_number = db.get_old_meters(message.message_id, message.chat.id)
+        if old_number is None:
+            bot.reply_to(message,
+                         "Не могу отредактировать это сообщение. Возможно, оно было написано до обновления бота. "
+                         "Напишите новые метры отдельным сообщением.")
+            return
+
+        # Вычисляем разницу
+        delta = new_number - old_number
+        if delta == 0:
+            # Цифры не поменялись
+            return
+
+        # Записываем новое значение в локальную БД, чтобы запомнить на будущее
+        db.save_message(message.message_id, message.chat.id, user_key, date, new_number)
+
+        # Отправляем разницу в Google Таблицу
+        new_total = update_sheet_meters(delta, user_key, date)
+        if new_total is not None:
+            logging.info(f'User {user_key} edited record: {old_number} -> {new_number} (Delta: {delta})')
+            bot.set_message_reaction(chat_id=message.chat.id,
+                                     message_id=message.id, reaction=[ReactionTypeEmoji("✍")])
+            bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.\n')
+
+            # Пишем текст только если тренировок > 1
+            workouts_count = db.get_workouts_count(user_key, date)
+            if workouts_count > 1:
+                bot.reply_to(message, f'Итого за день: {new_total} м.')
+        else:
+            bot.reply_to(message, "Ошибка при сохранении в Google Таблицу.")
     except Exception as e:
         logging.error(f'Error handling edited message: {e}')
 
