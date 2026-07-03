@@ -389,7 +389,7 @@ def handle_edited_plus_message(message):
 
         # Формат "+<метры> <дата>"
         if plus_data_message_handing(message):
-            number = int(message.text.split()[0][1:])
+            new_number = int(message.text.split()[0][1:])
             date = str(message.text.split()[1])
             pattern_of_date = "%d.%m.%Y"
             isValid = True
@@ -406,7 +406,7 @@ def handle_edited_plus_message(message):
 
         # Формат "+<метры>" (без даты)
         elif plus_message_handling(message) and message.text[1:].isdigit():
-            number = message.text[1:]
+            new_number = message.text[1:]
             # Дату берем так же, как при первоначальном сохранении
             date_obj = datetime.fromtimestamp(message.date + 18000)
             date = date_obj.strftime("%d.%m.%Y")
