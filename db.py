@@ -37,3 +37,14 @@ def get_old_meters(message_id, chat_id):
                        (message_id, chat_id))
         row = cursor.fetchone()
         return row[0] if row else None
+
+
+def get_workouts_count(user_id, date_str):
+    """Считает количество тренировок пользователя за конкретную дату"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        # Считаем количество записей
+        cursor.execute('SELECT COUNT(*) FROM messages WHERE user_id = ? AND date_str = ?',
+                       (str(user_id), date_str))
+        row = cursor.fetchone()
+        return row[0] if row else 0
