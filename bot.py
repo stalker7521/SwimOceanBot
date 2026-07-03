@@ -254,6 +254,7 @@ def update_sheet_meters(delta, usr_name, date):
             # добавляем в последнюю ячейку определенного столбца данные
             sheet.update_cell(row_num, col_index, new_val)
             logging.info(f'The cell  has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {usr_name}')
+            return new_val  # Возвращаем итоговое значение, чтобы показать юзеру
 
         except Exception as e:
             logging.error(f'An error occurred: {e}')
@@ -312,8 +313,9 @@ def handle_number_with_data_message(message):
         user_key = get_user_key(message)
         if user_key:
             logging.info(f'ID пользователя, который ввел данные: {user_key}')
-            update_sheet_meters(number, user_key, date)  # записываем число в таблицу
-            bot.reply_to(message, f'Число {number} было записано в дату: {date}')
+            db.save_message(message.message_id, message.chat.id, user_key, date, number)
+            new_total = update_sheet_meters(int(number), user_key, date)  # записываем метры, получаем итоговое значение
+            bot.reply_to(message, f'Число {number} было записано в дату: {date}. Итого за день: {new_total} м.')
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id,
                                      reaction=[ReactionTypeEmoji("✍")]
@@ -344,14 +346,15 @@ def handle_number_message(message):
         user_key = get_user_key(message)
         if user_key:
             logging.info(f'ID пользователя, который ввел данные: {user_key}')
-
-            update_sheet_meters(number, user_key, date)  # записываем число в таблицу
+            db.save_message(message.message_id, message.chat.id, user_key, date, number)
+            new_total = update_sheet_meters(int(number), user_key, date)  # записываем число в таблицу
 
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id,
                                      reaction=[ReactionTypeEmoji("✍")]
                                      )
             logging.info(f'User {user_key} recorded {number} meters for date {date}')
+            logging.info(f'Итого было записано в текущую дату: {new_total}')
             logging.info(f'ChatID: {message.chat.id})')  # for new features in the future
         else:
             msg = ("Вас нет в таблице или вашего ID нет в общей базе. "
@@ -371,9 +374,16 @@ def handle_edited_plus_message(message):
         logging.info(
             f'Processing edited message from user {message.from_user.id}: "{message.text}"'
         )
-        # Повторяем логику для двух форматов сообщений: +<метры дата> и +<метры>
+        new_number = 0
+        date = ""
+
+        # =======================================
+        # Блок 1: парсинг и проверки формата и даты
+        # =========================================
+
+        # Формат "+<метры> <дата>"
         if plus_data_message_handing(message):
-            number = message.text.split()[0][1:]
+            number = int(message.text.split()[0][1:])
             date = str(message.text.split()[1])
             pattern_of_date = "%d.%m.%Y"
             isValid = True
@@ -381,45 +391,21 @@ def handle_edited_plus_message(message):
                 isValid = bool(datetime.strptime(date, pattern_of_date))
             except ValueError:
                 isValid = False
-            if isValid and is_date_valid(date):
-                user_key = get_user_key(message)
-                if user_key:
-                    logging.info(f'User {user_key} edited record: {number} meters for date {date}')
-                    update_sheet_meters(number, user_key, date)
-                    bot.reply_to(
-                        message,
-                        f'Отредактировано: число {number} записано в дату: {date}'
-                    )
-                    bot.set_message_reaction(chat_id=message.chat.id,
-                                             message_id=message.id,
-                                             reaction=[ReactionTypeEmoji("✍")]
-                                             )
-                else:
-
-                    bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе")
-            else:
+            if not (isValid and is_date_valid(date)):
                 bot.set_message_reaction(chat_id=message.chat.id,
                                          message_id=message.id,
                                          reaction=[ReactionTypeEmoji("👎")])
                 bot.reply_to(message, 'Дата введена неверно, ознакомьтесь с инструкцией в /help')
+                return  # прерываем функцию если дата имеет неверный формат
 
+        # Формат "+<метры>" (без даты)
         elif plus_message_handling(message) and message.text[1:].isdigit():
             number = message.text[1:]
             # Дату берем так же, как при первоначальном сохранении
             date_obj = datetime.fromtimestamp(message.date + 18000)
             date = date_obj.strftime("%d.%m.%Y")
-            user_key = get_user_key(message)
-            if user_key:
-                logging.info(f'User {user_key} edited record: {number} meters for date {date}')
-                update_sheet_meters(number, user_key, date)
-                bot.reply_to(message, f'Отредактировано: число {number} записано в дату: {date}')
-                bot.set_message_reaction(chat_id=message.chat.id,
-                                         message_id=message.id,
-                                         reaction=[ReactionTypeEmoji("✍")]
-                                         )
-            else:
-                bot.reply_to(message, ("Вас нет в таблице или вашего ID нет в общей базе. "
-                                       "Обратитесь к администратору бота"))
+
+        # Формат сообщения в корне не верен
         else:
             bot.set_message_reaction(
                 chat_id=message.chat.id,
@@ -428,6 +414,46 @@ def handle_edited_plus_message(message):
             )
             bot.reply_to(message, 'Команда введена неверно, ознакомьтесь с инструкцией в /help')
             return
+
+        # ==========================================
+        # БЛОК 2: проверка пользователя
+        # ==========================================
+        user_key = get_user_key(message)
+        if not user_key:
+            bot.reply_to(message, "Вас нет в таблице или вашего ID нет в общей базе. Обратитесь к администратору.")
+            return
+
+        # ==========================================
+        # БЛОК 3: работа с БД
+        # ==========================================
+
+        # Достаем старое значение из нашей sqlite БД
+        old_number = db.get_old_meters(message.message_id, message.chat.id)
+        if old_number is None:
+            bot.reply_to(message,
+                         "Не могу отредактировать это сообщение. Возможно, оно было написано до обновления бота. "
+                         "Напишите новые метры отдельным сообщением.")
+            return
+
+        # Вычисляем разницу
+        delta = new_number - old_number
+        if delta == 0:
+            # Цифры не поменялись
+            return
+
+        # Записываем новое значение в локальную БД, чтобы запомнить на будущее
+        db.save_message(message.message_id, message.chat.id, user_key, date, new_number)
+
+        # Отправляем разницу в Google Таблицу
+        new_total = update_sheet_meters(delta, user_key, date)
+        if new_total is not None:
+            logging.info(f'User {user_key} edited record: {old_number} -> {new_number} (Delta: {delta})')
+            bot.set_message_reaction(chat_id=message.chat.id,
+                                     message_id=message.id, reaction=[ReactionTypeEmoji("✍")])
+            bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.\n'
+                                  f'Итого за день: {new_total} м.')
+        else:
+            bot.reply_to(message, "Ошибка при сохранении в Google Таблицу.")
     except Exception as e:
         logging.error(f'Error handling edited message: {e}')
 
