@@ -16,7 +16,7 @@ matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 from constants import START_TEXT, HELP_TEXT
 
 from settings import (
-    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data, DATA_DIR
+    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data, DATA_DIR, ADMIN_IDS
 )
 
 load_dotenv()  # для локальной работы env var
@@ -590,6 +590,34 @@ def handle_get_table(message):
     except Exception as e:
         print(f"Ошибка выгрузки: {e}")
         bot.reply_to(message, "❌ Произошла ошибка при формировании таблицы.")
+
+
+@bot.message_handler(commands=['getid'])
+def handle_getid(message):
+    # Проверяем, есть ли ID написавшего в нашем списке админов
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not message.reply_to_message:
+        # Отвечаем прямо в чат, если админ ошибся с форматом, и удаляем через 5 сек
+        bot.reply_to(message, "❌ Команду /getid нужно вызывать ОТВЕТОМ на сообщение.")
+        return
+    target_user = message.reply_to_message.from_user
+
+    if message.reply_to_message.sender_chat:
+        bot.send_message(message.from_user.id, "❌ Это сообщение от имени канала/группы. ID скрыт.")
+    else:
+        text = (f"👤 **Пользователь:** {target_user.first_name} {target_user.last_name or ''}\n"
+                f"🆔 **ID:** `{target_user.id}`\n"
+                f"🔗 **Username:** @{target_user.username or 'Нет'}")
+
+        # Отправляем сообщение в ЛС именно тому админу, который запросил (message.from_user.id)
+        bot.send_message(message.from_user.id, text, parse_mode="Markdown")
+    # Удаляем сообщение с командой /getid из общего чата
+    try:
+        bot.delete_message(message.chat.id, message.id)
+    except Exception as e:
+        logging.error(f"Не смог удалить команду /getid: {e}")
 
 
 # Запуск бота

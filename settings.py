@@ -20,6 +20,17 @@ if not ENCRYPTION_KEY:
     raise ValueError("CRITICAL ERROR: ENCRYPTION_KEY не найден!")
 fernet = Fernet(ENCRYPTION_KEY.encode())
 
+raw_admins = os.environ.get('ADMIN_IDS')
+ADMIN_IDS = []
+if raw_admins:
+    # Разбиваем строку по запятой, убираем лишние пробелы и превращаем в int
+    try:
+        ADMIN_IDS = [int(admin_id.strip()) for admin_id in raw_admins.split(',')]
+        print(f"Загружены права администратора для {len(ADMIN_IDS)} пользователей.")
+    except ValueError:
+        print("CRITICAL ERROR: Неверный формат ADMIN_IDS. Используйте цифры через запятую!")
+else:
+    print("WARNING: Переменная ADMIN_IDS не найдена. У бота нет администраторов!")
 
 def encrypt_data(data: str) -> str:
     """Шифрует строку"""
