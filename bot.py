@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv  # для локальной работы env var
-import os, json, telebot, gspread, threading, time, logging, db
+import os, json, telebot, gspread, threading, time, logging, db, html
 import matplotlib.pyplot as plt
 
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
@@ -607,12 +607,17 @@ def handle_getid(message):
     if message.reply_to_message.sender_chat:
         bot.send_message(message.from_user.id, "❌ Это сообщение от имени канала/группы. ID скрыт.")
     else:
-        text = (f"👤 **Пользователь:** {target_user.first_name} {target_user.last_name or ''}\n"
-                f"🆔 **ID:** `{target_user.id}`\n"
-                f"🔗 **Username:** @{target_user.username or 'Нет'}")
+        # 1. Безопасно экранируем имена и ники (превращаем < в &lt; и т.д.)
+        safe_first_name = html.escape(target_user.first_name or "")
+        safe_last_name = html.escape(target_user.last_name or "")
+        safe_username = html.escape(target_user.username or "Нет")
 
-        # Отправляем сообщение в ЛС именно тому админу, который запросил (message.from_user.id)
-        bot.send_message(message.from_user.id, text, parse_mode="Markdown")
+        # 2. Используем HTML теги (<b> для жирного, <code> для моноширинного)
+        text = (f"👤 <b>Пользователь:</b> {safe_first_name} {safe_last_name}\n"
+                f"🆔 <b>ID:</b> <code>{target_user.id}</code>\n"
+                f"🔗 <b>Username:</b> @{safe_username}")
+
+        bot.send_message(message.from_user.id, text, parse_mode="HTML")
     # Удаляем сообщение с командой /getid из общего чата
     try:
         bot.delete_message(message.chat.id, message.id)
