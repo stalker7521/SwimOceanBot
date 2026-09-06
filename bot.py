@@ -222,42 +222,65 @@ def get_sum_for_period(df):
     return img
 
 
-# Функция для записи данных в Google Sheets
-def update_sheet_meters(delta, usr_name, date):
-    """Прибавляет delta к текущему значению в ячейке"""
+# Функция для записи данных в Google Sheets с повторными попытками и очередью
+def update_sheet_meters(delta, user_key, date, message_id=None, chat_id=None):
+    """
+    Прибавляет delta к ячейке.
+    Возвращает кортеж: (new_val, status)
+    status может быть: 'synced', 'queued', 'error'
+    """
+    max_retries = 3
+    last_error = None
 
-    # доступ к таблице через семафор для защиты от deadlock
-    with google_lock:
-        try:
-            client = get_gsheet_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-            # Ищем строку с указанной датой
-            dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
-
-            # вытаскиваем из словаря Имя пользователя по его tg-id
-            usr_name = user_column_map[usr_name]
-            col_names = sheet.row_values(1)  # список всех имен пользователей
-            col_index = col_names.index(usr_name) + 1
-            row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
-
-            # Читаем текущее значение ячейки
-            current_val_str = sheet.cell(row_num, col_index).value
-
-            # Превращаем в число
+    for attempt in range(max_retries):
+        # доступ к таблице через семафор для защиты от deadlock
+        with google_lock:
             try:
-                current_val = int(current_val_str) if current_val_str else 0
-            except ValueError:
-                current_val = 0
+                client = get_gsheet_client()
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+                # Ищем строку с указанной датой
+                dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
 
-            # Считаем новую сумму
-            new_val = current_val + delta
-            # добавляем в последнюю ячейку определенного столбца данные
-            sheet.update_cell(row_num, col_index, new_val)
-            logging.info(f'The cell  has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {usr_name}')
-            return new_val  # Возвращаем итоговое значение, чтобы показать юзеру
+                # вытаскиваем из словаря Имя пользователя по его tg-id
+                usr_name = user_column_map[user_key]
+                col_names = sheet.row_values(1)  # список всех имен пользователей
 
-        except Exception as e:
-            logging.error(f'An error occurred: {e}')
+                if usr_name not in col_names:
+                    logging.error(f"Пользователь {usr_name} не найден в шапке таблицы!")
+                    return None, "error"
+
+                col_index = col_names.index(usr_name) + 1
+                row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
+
+                # Читаем текущее значение ячейки
+                current_val_str = sheet.cell(row_num, col_index).value
+
+                # Превращаем в число
+                try:
+                    current_val = int(current_val_str) if current_val_str else 0
+                except ValueError:
+                    current_val = 0
+
+                # Считаем новую сумму
+                new_val = current_val + delta
+                # добавляем в последнюю ячейку определенного столбца данные
+                sheet.update_cell(row_num, col_index, new_val)
+                logging.info(
+                    f'The cell  has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {usr_name}')
+                return new_val, "synced"  # Возвращаем итоговое значение и статус записи данных, чтобы показать юзеру
+
+            except Exception as e:
+                last_error = e
+                logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} обновить Google Таблицу не удалась: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(1.5 * (attempt + 1))  # Пауза: 1.5 сек, 3 сек
+    # Если все 3 попытки провалились -> сохраняем в очередь SQLite
+    logging.error(f"❌ Google API недоступен после {max_retries} попыток. Сохраняю в оффлайн-очередь: {last_error}")
+    if message_id and chat_id:
+        db.add_to_sync_queue(message_id, chat_id, user_key, date, delta)
+        return None, "queued"
+
+    return None, "error"
 
 
 # Проверка есть ли ID пользователя в общей базе
