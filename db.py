@@ -1,4 +1,4 @@
-import sqlite3, os
+import sqlite3, os, logging
 from settings import DATA_DIR
 
 DB_PATH = os.path.join(DATA_DIR, 'messages_ledger.db')
@@ -42,7 +42,7 @@ def init_db():
                     )
                 ''')
         conn.commit()
-    print("✅ База данных SQLite (сообщения + очередь синхронизации) инициализирована.")
+    logging.info("База данных SQLite (сообщения + очередь синхронизации) инициализирована.")
 
 
 def save_message(message_id, chat_id, user_id, date_str, meters):
@@ -88,7 +88,7 @@ def add_to_sync_queue(message_id, chat_id, user_id, date_str, delta):
             VALUES (?, ?, ?, ?, ?, 'pending')
         ''', (message_id, chat_id, str(user_id), date_str, int(delta)))
         conn.commit()
-    print(f"Запись добавлена в очередь синхронизации: {delta}м для {user_id} на {date_str}")
+    logging.info(f"Запись добавлена в очередь синхронизации: {delta}м для {user_id} на {date_str}")
 
 
 def get_pending_syncs():
