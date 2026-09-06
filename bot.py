@@ -97,6 +97,59 @@ def maintenance_job():
         time.sleep(BACKUP_INTERVAL_DAYS * 24 * 60 * 60)
 
 
+def process_sync_queue():
+    """Фоновая отправка накопившихся записей в Google Таблицу"""
+    pending_items = db.get_pending_syncs()
+    if not pending_items:
+        return
+
+    logging.info(f" В очереди синхронизации найдено {len(pending_items)} записей. Начинаю отправку в Google...")
+    for item in pending_items:
+        queue_id, msg_id, chat_id, user_key, date_str, delta = item
+
+        # Проверяем, есть ли пользователь в мапе
+        if user_key not in user_column_map:
+            continue
+
+        with google_lock:
+            try:
+                client = get_gsheet_client()
+                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+                dates = sheet.col_values(1)
+                full_name = user_column_map[user_key]
+                col_names = sheet.row_values(1)
+
+                col_index = col_names.index(full_name) + 1
+                row_num = dates.index(date_str) + 1
+
+                current_val_str = sheet.cell(row_num, col_index).value
+                try:
+                    current_val = int(current_val_str) if current_val_str else 0
+                except ValueError:
+                    current_val = 0
+
+                new_val = current_val + delta
+                sheet.update_cell(row_num, col_index, new_val)
+
+                # Успешно отправлено -> помечаем в SQLite
+                db.mark_as_synced(queue_id)
+                logging.info(f" Очередь [ID {queue_id}]: успешно синхронизировано {delta}м для {full_name}")
+                time.sleep(1)  # Пауза между запросами, чтобы не спамить в API
+
+            except Exception as e:
+                logging.error(f"⚠️ Очередь [ID {queue_id}] не смогла синхронизироваться (Google все еще лежит): {e}")
+                # Если Google все еще недоступен, прерываем цикл до следующей минуты
+                break
+
+def queue_worker_job():
+    """Поток, который каждую минуту проверяет наличие оффлайн-записей"""
+    time.sleep(20)  # Ждем старта сети
+    while True:
+        try:
+            process_sync_queue()
+        except Exception as e:
+            logging.error(f"Ошибка в queue_worker: {e}")
+        time.sleep(60)  # Проверка раз в минуту
 # -----------------------------------------------------------------------
 # Инициализация бота
 if TOKEN is None:
