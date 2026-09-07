@@ -715,9 +715,15 @@ def handle_getid(message):
 # Запуск бота
 if __name__ == '__main__':
     print("Bot is starting...")
-    # Запускаем бэкапы в отдельном фоновом потоке
+
+    # Поток бэкапов
     backup_thread = threading.Thread(target=maintenance_job, daemon=True)
     backup_thread.start()
+
+    # Поток синхронизации очереди (Outbox Worker)
+    sync_thread = threading.Thread(target=queue_worker_job, daemon=True)
+    sync_thread.start()
+
     load_users_from_sheet()
     # автоматический перезапуск бота при обрыве связи
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
