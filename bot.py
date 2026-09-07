@@ -113,6 +113,7 @@ def process_sync_queue():
 
         with google_lock:
             try:
+                # Механизм записи в таблицу тот же, что и в основной функции записи данных update_sheet_meters
                 client = get_gsheet_client()
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
                 dates = sheet.col_values(1)
@@ -141,6 +142,7 @@ def process_sync_queue():
                 # Если Google все еще недоступен, прерываем цикл до следующей минуты
                 break
 
+
 def queue_worker_job():
     """Поток, который каждую минуту проверяет наличие оффлайн-записей"""
     time.sleep(20)  # Ждем старта сети
@@ -150,6 +152,8 @@ def queue_worker_job():
         except Exception as e:
             logging.error(f"Ошибка в queue_worker: {e}")
         time.sleep(60)  # Проверка раз в минуту
+
+
 # -----------------------------------------------------------------------
 # Инициализация бота
 if TOKEN is None:
@@ -424,26 +428,28 @@ def handle_new_plus_message(message):
         # Записываем новое сообщение в локальную базу
         db.save_message(message.message_id, message.chat.id, user_key, date, number)
 
-        # Отправляем метры в Google Таблицу
-        new_total = update_sheet_meters(number, user_key, date)
-
-        if new_total is None:
-            return bot.reply_to(message, "Ошибка при сохранении в Google Таблицу.")
+        # Отправляем метры в Google Таблицу (передаем message_id и chat_id для очереди)
+        new_total, status = update_sheet_meters(number, user_key, date, message.message_id, message.chat.id)
 
         # ==========================================
         # Обратная связь пользователю
         # ==========================================
 
-        # Ставим эмодзи в любом случае
+        # Всегда ставим реакцию, так как локально запись уже сохранена (в функции update_sheet_meters)
         bot.set_message_reaction(message.chat.id, message.id, [ReactionTypeEmoji("✍")])
 
-        workouts_count = db.get_workouts_count(user_key, date)
-
-        # Если тренировок больше одной - пишем текст
-        if workouts_count > 1:
-            bot.reply_to(message, f'За день проплыто {new_total} м.')
-
-        logging.info(f'User {user_key} added {number}m for {date}. Total workouts today: {workouts_count}')
+        if status == "synced":
+            workouts_count = db.get_workouts_count(user_key, date)
+            # Если тренировок больше одной - пишем текст
+            if workouts_count > 1:
+                bot.reply_to(message, f'За день проплыто {new_total} м.')
+            logging.info(f'User {user_key} added {number}m for {date}. Total workouts today: {workouts_count}')
+        elif status == "queued":
+            bot.reply_to(message,
+                         "⏳ Google Таблицы временно недоступны. "
+                         "Метры сохранены в памяти бота и синхронизируются автоматически в ближайшее время.")
+        else:
+            bot.reply_to(message, "❌ Не удалось сохранить данные. Обратитесь к администратору.")
 
     except Exception as e:
         logging.error(f'Error handling new message: {e}')
@@ -527,19 +533,24 @@ def handle_edited_plus_message(message):
         db.save_message(message.message_id, message.chat.id, user_key, date, new_number)
 
         # Отправляем разницу в Google Таблицу
-        new_total = update_sheet_meters(delta, user_key, date)
-        if new_total is not None:
+        new_total, status = update_sheet_meters(delta, user_key, date, message.message_id, message.chat.id)
+        if status in ["synced", "queued"]:
             logging.info(f'User {user_key} edited record: {old_number} -> {new_number} (Delta: {delta})')
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id, reaction=[ReactionTypeEmoji("✍")])
-            bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.\n')
+            if status == "synced":
+                bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.')
+                workouts_count = db.get_workouts_count(user_key, date)
 
-            # Пишем текст только если тренировок > 1
-            workouts_count = db.get_workouts_count(user_key, date)
-            if workouts_count > 1:
-                bot.reply_to(message, f'Итого за день: {new_total} м.')
+                # Пишем текст только если тренировок > 1
+                if workouts_count > 1:
+                    bot.reply_to(message, f'Итого за день: {new_total} м.')
+            else:
+                bot.reply_to(message,
+                             f'Отредактировано: {old_number} ➔ {new_number} м.\n'
+                             f'⏳ Синхронизация с таблицей произойдет автоматически при восстановлении связи.')
         else:
-            bot.reply_to(message, "Ошибка при сохранении в Google Таблицу.")
+            bot.reply_to(message, "❌ Ошибка при сохранении изменений.")
     except Exception as e:
         logging.error(f'Error handling edited message: {e}')
 
