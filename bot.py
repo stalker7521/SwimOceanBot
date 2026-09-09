@@ -1,15 +1,24 @@
-import base64
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
 import pandas as pd
-import matplotlib
 
 from datetime import datetime, timezone, timedelta
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv  # для локальной работы env var
-import os, json, telebot, gspread, threading, time, logging, db, html
+import os, json, gspread, threading, time, logging, db, html, sys, base64
+
+# Принудительная настройка логирования для PyCharm и сервера
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,  # Выводим в стандартный поток
+    force=True          # принудительно перезаписываем настройки логгирования telebot/matplotlib с целью показа
+                        # логгов в локальной консоли
+)
+
+import telebot, matplotlib
 import matplotlib.pyplot as plt
 
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
@@ -160,9 +169,6 @@ if TOKEN is None:
     raise ValueError("Ошибка: Переменная окружения TOKEN не установлена!")
 bot = telebot.TeleBot(TOKEN)
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # Светофор для защиты от конфликта потоков при работе с Google
 google_lock = threading.Lock()
 
@@ -290,9 +296,11 @@ def update_sheet_meters(delta, user_key, date, message_id=None, chat_id=None):
     last_error = None
 
     for attempt in range(max_retries):
+
         # доступ к таблице через семафор для защиты от deadlock
         with google_lock:
             try:
+
                 client = get_gsheet_client()
                 sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
                 # Ищем строку с указанной датой
@@ -445,9 +453,7 @@ def handle_new_plus_message(message):
                 bot.reply_to(message, f'За день проплыто {new_total} м.')
             logging.info(f'User {user_key} added {number}m for {date}. Total workouts today: {workouts_count}')
         elif status == "queued":
-            bot.reply_to(message,
-                         "⏳ Google Таблицы временно недоступны. "
-                         "Метры сохранены в памяти бота и синхронизируются автоматически в ближайшее время.")
+            logging.info(f"Метры для {user_key} ({number}м) приняты в оффлайн-очередь.")
         else:
             bot.reply_to(message, "❌ Не удалось сохранить данные. Обратитесь к администратору.")
 
@@ -538,17 +544,14 @@ def handle_edited_plus_message(message):
             logging.info(f'User {user_key} edited record: {old_number} -> {new_number} (Delta: {delta})')
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id, reaction=[ReactionTypeEmoji("✍")])
-            if status == "synced":
-                bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.')
-                workouts_count = db.get_workouts_count(user_key, date)
 
+            bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.')
+
+            if status == "synced":
+                workouts_count = db.get_workouts_count(user_key, date)
                 # Пишем текст только если тренировок > 1
                 if workouts_count > 1:
                     bot.reply_to(message, f'Итого за день: {new_total} м.')
-            else:
-                bot.reply_to(message,
-                             f'Отредактировано: {old_number} ➔ {new_number} м.\n'
-                             f'⏳ Синхронизация с таблицей произойдет автоматически при восстановлении связи.')
         else:
             bot.reply_to(message, "❌ Ошибка при сохранении изменений.")
     except Exception as e:
