@@ -14,8 +14,8 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     stream=sys.stdout,  # Выводим в стандартный поток
-    force=True          # принудительно перезаписываем настройки логгирования telebot/matplotlib с целью показа
-                        # логгов в локальной консоли
+    force=True  # принудительно перезаписываем настройки логгирования telebot/matplotlib с целью показа
+    # логгов в локальной консоли
 )
 
 import telebot, matplotlib
@@ -116,38 +116,17 @@ def process_sync_queue():
     for item in pending_items:
         queue_id, msg_id, chat_id, user_key, date_str, delta = item
 
-        # Проверяем, есть ли пользователь в мапе
-        if user_key not in user_column_map:
-            continue
-
         with google_lock:
             try:
-                # Механизм записи в таблицу тот же, что и в основной функции записи данных update_sheet_meters
-                client = get_gsheet_client()
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-                dates = sheet.col_values(1)
-                full_name = user_column_map[user_key]
-                col_names = sheet.row_values(1)
-
-                col_index = col_names.index(full_name) + 1
-                row_num = dates.index(date_str) + 1
-
-                current_val_str = sheet.cell(row_num, col_index).value
-                try:
-                    current_val = int(current_val_str) if current_val_str else 0
-                except ValueError:
-                    current_val = 0
-
-                new_val = current_val + delta
-                sheet.update_cell(row_num, col_index, new_val)
-
+                _apply_sheet_delta(user_key, date_str, delta)
                 # Успешно отправлено -> помечаем в SQLite
                 db.mark_as_synced(queue_id)
-                logging.info(f" Очередь [ID {queue_id}]: успешно синхронизировано {delta}м для {full_name}")
-                time.sleep(1)  # Пауза между запросами, чтобы не спамить в API
+                logging.info(f" Очередь [ID {queue_id}]: успешно синхронизировано {delta}м для {user_key}")
+                time.sleep(1)  # Пауза между запросами для мягкой нагрузки на API
 
             except Exception as e:
-                logging.error(f"⚠️ Очередь [ID {queue_id}] не смогла синхронизироваться (Google все еще лежит): {e}")
+                logging.error(
+                    f"⚠️ Очередь [ID {queue_id}] не смогла синхронизироваться (Google все еще недоступен): {e}")
                 # Если Google все еще недоступен, прерываем цикл до следующей минуты
                 break
 
@@ -285,12 +264,54 @@ def get_sum_for_period(df):
     return img
 
 
+def _apply_sheet_delta(user_key: str, date_str: str, delta: int) -> int:
+    """
+    Атомарная операция: находит ячейку пользователя за дату,
+    прибавляет delta и возвращает новое значение.
+    Вызывает исключения при ошибках API для обработки на верхнем уровне.
+    """
+
+    # вытаскиваем из словаря Имя пользователя по его tg-id
+    full_name = user_column_map.get(user_key)
+    if not full_name:
+        raise ValueError(f"Пользователь с ключом {user_key} не найден в базе!")
+
+    client = get_gsheet_client()
+    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
+
+    # Ищем строку с указанной датой
+    dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
+    col_names = sheet.row_values(1)  # список всех имен пользователей
+
+    if full_name not in col_names:
+        raise ValueError(f"Пользователь {full_name} отсутствует в шапке таблицы {WORKSHEET_NAME}!")
+
+    col_index = col_names.index(full_name) + 1
+    row_num = dates.index(date_str) + 1  # +1 т.к. нумерация с 1
+
+    # Читаем текущее значение ячейки
+    current_val_str = sheet.cell(row_num, col_index).value
+
+    # Превращаем в число
+    try:
+        current_val = int(current_val_str) if current_val_str else 0
+    except ValueError:
+        current_val = 0
+
+    # Считаем новую сумму
+    new_val = current_val + delta
+    # добавляем в последнюю ячейку определенного столбца данные
+    sheet.update_cell(row_num, col_index, new_val)
+    logging.info(
+        f"The cell has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {full_name}")
+    return new_val
+
+
 # Функция для записи данных в Google Sheets с повторными попытками и очередью
 def update_sheet_meters(delta, user_key, date, message_id=None, chat_id=None):
     """
-    Прибавляет delta к ячейке.
-    Возвращает кортеж: (new_val, status)
-    status может быть: 'synced', 'queued', 'error'
+    Прибавляет delta с механизмом Retry и сбросом в оффлайн-очередь при отказе.
+    Возвращает словарь: {"status": "synced" | "queued" | "error", "total": int | None}
     """
     max_retries = 3
     last_error = None
@@ -299,53 +320,29 @@ def update_sheet_meters(delta, user_key, date, message_id=None, chat_id=None):
 
         # доступ к таблице через семафор для защиты от deadlock
         with google_lock:
+
             try:
+                new_total = _apply_sheet_delta(user_key, date, delta)
+                return {"status": "synced", "total": new_total}
 
-                client = get_gsheet_client()
-                sheet = client.open_by_key(SPREADSHEET_ID).worksheet(WORKSHEET_NAME)
-                # Ищем строку с указанной датой
-                dates = sheet.col_values(1)  # Получаем все даты из столбца A (он с датами)
-
-                # вытаскиваем из словаря Имя пользователя по его tg-id
-                usr_name = user_column_map[user_key]
-                col_names = sheet.row_values(1)  # список всех имен пользователей
-
-                if usr_name not in col_names:
-                    logging.error(f"Пользователь {usr_name} не найден в шапке таблицы!")
-                    return None, "error"
-
-                col_index = col_names.index(usr_name) + 1
-                row_num = dates.index(date) + 1  # +1 т.к. нумерация с 1
-
-                # Читаем текущее значение ячейки
-                current_val_str = sheet.cell(row_num, col_index).value
-
-                # Превращаем в число
-                try:
-                    current_val = int(current_val_str) if current_val_str else 0
-                except ValueError:
-                    current_val = 0
-
-                # Считаем новую сумму
-                new_val = current_val + delta
-                # добавляем в последнюю ячейку определенного столбца данные
-                sheet.update_cell(row_num, col_index, new_val)
-                logging.info(
-                    f'The cell  has been updated: {current_val} -> {new_val} (Delta: {delta}) for user {usr_name}')
-                return new_val, "synced"  # Возвращаем итоговое значение и статус записи данных, чтобы показать юзеру
+            except ValueError as ve:
+                # Исключение возникает, если пользователя нет в таблице или проблема с его распознаванием по ключу
+                logging.error(f"Ошибка валидации данных: {ve}")
+                return {"status": "error", "total": None}
 
             except Exception as e:
                 last_error = e
                 logging.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} обновить Google Таблицу не удалась: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1.5 * (attempt + 1))  # Пауза: 1.5 сек, 3 сек
+
     # Если все 3 попытки провалились -> сохраняем в очередь SQLite
     logging.error(f"❌ Google API недоступен после {max_retries} попыток. Сохраняю в оффлайн-очередь: {last_error}")
     if message_id and chat_id:
         db.add_to_sync_queue(message_id, chat_id, user_key, date, delta)
-        return None, "queued"
+        return {"status": "queued", "total": None}
 
-    return None, "error"
+    return {"status": "error", "total": None}
 
 
 # Проверка есть ли ID пользователя в общей базе
@@ -401,13 +398,13 @@ def handle_new_plus_message(message):
             number = int(message.text.split()[0][1:])
             date = str(message.text.split()[1])
 
-            isValid = True
+            is_valid = True
             try:
-                isValid = bool(datetime.strptime(date, "%d.%m.%Y"))
+                is_valid = bool(datetime.strptime(date, "%d.%m.%Y"))
             except ValueError:
-                isValid = False
+                is_valid = False
 
-            if not (isValid and is_date_valid(date)):
+            if not (is_valid and is_date_valid(date)):
                 bot.set_message_reaction(message.chat.id, message.id, [ReactionTypeEmoji("👎")])
                 return bot.reply_to(message, 'Дата введена неверно, ознакомьтесь с инструкцией в /help')
 
@@ -437,7 +434,7 @@ def handle_new_plus_message(message):
         db.save_message(message.message_id, message.chat.id, user_key, date, number)
 
         # Отправляем метры в Google Таблицу (передаем message_id и chat_id для очереди)
-        new_total, status = update_sheet_meters(number, user_key, date, message.message_id, message.chat.id)
+        result = update_sheet_meters(number, user_key, date, message.message_id, message.chat.id)
 
         # ==========================================
         # Обратная связь пользователю
@@ -446,14 +443,16 @@ def handle_new_plus_message(message):
         # Всегда ставим реакцию, так как локально запись уже сохранена (в функции update_sheet_meters)
         bot.set_message_reaction(message.chat.id, message.id, [ReactionTypeEmoji("✍")])
 
-        if status == "synced":
+        if result.get("status") == "synced":
             workouts_count = db.get_workouts_count(user_key, date)
             # Если тренировок больше одной - пишем текст
             if workouts_count > 1:
-                bot.reply_to(message, f'За день проплыто {new_total} м.')
+                bot.reply_to(message, f'За день проплыто {result.get("total")} м.')
             logging.info(f'User {user_key} added {number}m for {date}. Total workouts today: {workouts_count}')
-        elif status == "queued":
+
+        elif result.get("status") == "queued":
             logging.info(f"Метры для {user_key} ({number}м) приняты в оффлайн-очередь.")
+
         else:
             bot.reply_to(message, "❌ Не удалось сохранить данные. Обратитесь к администратору.")
 
@@ -480,12 +479,12 @@ def handle_edited_plus_message(message):
             new_number = int(message.text.split()[0][1:])
             date = str(message.text.split()[1])
             pattern_of_date = "%d.%m.%Y"
-            isValid = True
+            is_valid = True
             try:
-                isValid = bool(datetime.strptime(date, pattern_of_date))
+                is_valid = bool(datetime.strptime(date, pattern_of_date))
             except ValueError:
-                isValid = False
-            if not (isValid and is_date_valid(date)):
+                is_valid = False
+            if not (is_valid and is_date_valid(date)):
                 bot.set_message_reaction(chat_id=message.chat.id,
                                          message_id=message.id,
                                          reaction=[ReactionTypeEmoji("👎")])
@@ -538,20 +537,20 @@ def handle_edited_plus_message(message):
         # Записываем новое значение в локальную БД, чтобы запомнить на будущее
         db.save_message(message.message_id, message.chat.id, user_key, date, new_number)
 
-        # Отправляем разницу в Google Таблицу
-        new_total, status = update_sheet_meters(delta, user_key, date, message.message_id, message.chat.id)
-        if status in ["synced", "queued"]:
+        # Отправляем разницу и получаем словарь
+        result = update_sheet_meters(delta, user_key, date, message.message_id, message.chat.id)
+        if result.get("status") in ["synced", "queued"]:
             logging.info(f'User {user_key} edited record: {old_number} -> {new_number} (Delta: {delta})')
             bot.set_message_reaction(chat_id=message.chat.id,
                                      message_id=message.id, reaction=[ReactionTypeEmoji("✍")])
 
             bot.reply_to(message, f'Отредактировано: {old_number} ➔ {new_number} м.')
 
-            if status == "synced":
+            if result.get("status") == "synced":
                 workouts_count = db.get_workouts_count(user_key, date)
                 # Пишем текст только если тренировок > 1
                 if workouts_count > 1:
-                    bot.reply_to(message, f'Итого за день: {new_total} м.')
+                    bot.reply_to(message, f'Итого за день: {result.get("total")} м.')
         else:
             bot.reply_to(message, "❌ Ошибка при сохранении изменений.")
     except Exception as e:
