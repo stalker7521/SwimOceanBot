@@ -1,0 +1,13 @@
+venv/
+.venv/
+.git/
+.github/
+.idea/
+__pycache__/
+*.ipynb
+data/
+.env
+*.db
+*.db-wal
+*.db-shm
+*.xlsx

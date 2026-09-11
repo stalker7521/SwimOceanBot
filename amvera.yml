@@ -1,11 +1,10 @@
 meta:
-  environment: python
+  environment: docker
   toolchain:
-    name: pip
-    version: "3.12"
+    name: docker
+    version: latest
 build:
-  requirementsPath: requirements.txt
-  useCache: true
+  dockerfile: Dockerfile
+  skip: false
 run:
-  command: python -u bot.py
   persistenceMount: /data

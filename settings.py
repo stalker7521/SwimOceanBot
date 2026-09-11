@@ -47,6 +47,9 @@ def decrypt_data(encrypted_data: str) -> str:
 
 
 WORKSHEET_NAME = 'МетрыV2'
+LOCATIONS_SHEET_NAME = 'Локации'
+DEFAULT_START_CAPTION = 'Точка старта'
+DEFAULT_FINISH_CAPTION = 'Точка финиша'
 SCOPE = ['https://www.googleapis.com/auth/spreadsheets']
 START_DATE = '13-01-2025'
 

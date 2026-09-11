@@ -24,8 +24,10 @@ import matplotlib.pyplot as plt
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 from constants import START_TEXT, HELP_TEXT
 
+from map_generator import MapBuildError, RouteFinishedError, generate_map_png
 from settings import (
-    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, SCOPE, START_DATE, encrypt_data, decrypt_data, DATA_DIR, ADMIN_IDS
+    TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, LOCATIONS_SHEET_NAME, SCOPE, START_DATE,
+    encrypt_data, decrypt_data, DATA_DIR, ADMIN_IDS
 )
 
 load_dotenv()  # для локальной работы env var
@@ -150,6 +152,8 @@ bot = telebot.TeleBot(TOKEN)
 
 # Светофор для защиты от конфликта потоков при работе с Google
 google_lock = threading.Lock()
+# Один Chromium за раз: параллельные /map съедают RAM
+chromium_lock = threading.Lock()
 
 
 # Функция для подключения к Google Sheets
@@ -648,6 +652,30 @@ def handle_all_stat(message):
     bot.send_photo(chat_id=message.chat.id,
                    photo=img,
                    caption='Общая статистика за текущий месяц')
+
+
+@bot.message_handler(commands=['map'])
+def handle_map(message):
+    status = bot.reply_to(message, "Рисую карту…")
+    try:
+        meters_df = get_df_from_google_sheet(WORKSHEET_NAME)
+        locations_df = get_df_from_google_sheet(LOCATIONS_SHEET_NAME)
+        with chromium_lock:
+            img, caption = generate_map_png(meters_df, locations_df)
+        bot.send_photo(chat_id=message.chat.id, photo=img, caption=caption)
+    except RouteFinishedError:
+        bot.reply_to(message, "Все отрезки маршрута уже проплыты.")
+    except MapBuildError as e:
+        logging.error(f"Ошибка построения карты: {e}")
+        bot.reply_to(message, "Не удалось собрать карту: нет данных о метрах на сегодня.")
+    except Exception as e:
+        logging.error(f"Ошибка генерации карты: {e}")
+        bot.reply_to(message, "Не удалось нарисовать карту. Попробуйте позже.")
+    finally:
+        try:
+            bot.delete_message(message.chat.id, status.message_id)
+        except Exception as e:
+            logging.error(f"Не смог удалить статус /map: {e}")
 
 
 # Запрос копии таблицы с метрами
