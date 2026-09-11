@@ -17,3 +17,4 @@ data/
 *.db-wal
 *.db-shm
 *.xlsx
+*.ipynb
