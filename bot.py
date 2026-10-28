@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 import pandas as pd
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from telebot.types import ReactionTypeEmoji
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv  # для локальной работы env var
@@ -22,7 +22,7 @@ import telebot, matplotlib
 import matplotlib.pyplot as plt
 
 matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
-from constants import START_TEXT, HELP_TEXT
+from constants import START_TEXT, HELP_TEXT, LOCAL_TZ
 
 from map_generator import MapBuildError, RouteFinishedError, generate_map_png
 from settings import (
@@ -368,12 +368,19 @@ def get_user_key(message):
             return None
 
 
+def get_today_local():
+    """Сегодняшняя дата клуба (UTC+5), независимо от часового пояса сервера"""
+    return datetime.now(LOCAL_TZ).date()
+
+
+def get_message_date_str(message) -> str:
+    """Дата отправки сообщения в формате ДД.ММ.ГГГГ по UTC+5, независимо от часового пояса сервера"""
+    return datetime.fromtimestamp(message.date, LOCAL_TZ).strftime("%d.%m.%Y")
+
+
 def is_date_valid(input_date_str):
     user_date = datetime.strptime(input_date_str, "%d.%m.%Y").date()
-    now_utc = datetime.now(timezone.utc)
-    # Добавляем смещение +5 часов и округляем до дня
-    today = (now_utc + timedelta(hours=5)).date()
-    return user_date <= today
+    return user_date <= get_today_local()
 
 
 def plus_message_handling(message):
@@ -415,8 +422,7 @@ def handle_new_plus_message(message):
         # Формат "+<метры>" (без даты)
         elif plus_message_handling(message) and message.text[1:].isdigit():
             number = int(message.text[1:])
-            date_obj = datetime.fromtimestamp(message.date + 18000)
-            date = date_obj.strftime("%d.%m.%Y")
+            date = get_message_date_str(message)
 
         # Формат в корне не верен
         else:
@@ -499,8 +505,7 @@ def handle_edited_plus_message(message):
         elif plus_message_handling(message) and message.text[1:].isdigit():
             new_number = int(message.text[1:])
             # Дату берем так же, как при первоначальном сохранении
-            date_obj = datetime.fromtimestamp(message.date + 18000)
-            date = date_obj.strftime("%d.%m.%Y")
+            date = get_message_date_str(message)
 
         # Формат сообщения в корне не верен
         else:
@@ -605,8 +610,7 @@ def handle_pstat(message):
     if user_key:
         user_name = user_column_map[user_key]
         start_date = pd.to_datetime(START_DATE, dayfirst=True)
-        today = datetime.now().date().strftime("%d.%m.%Y")
-        today = pd.to_datetime(today, dayfirst=True)
+        today = pd.to_datetime(get_today_local())
 
         period_df = get_statistics_for_period(start_date=start_date,
                                               end_date=today)
@@ -641,11 +645,9 @@ def handle_pstat(message):
 # Общая статистика
 @bot.message_handler(commands=['stat_all'])
 def handle_all_stat(message):
-    cur_month = datetime.now().month
-    cur_year = datetime.now().year
-    start_date = pd.to_datetime(f"01-{cur_month}-{cur_year}", dayfirst=True)
-    today = datetime.now().date().strftime("%d.%m.%Y")
-    today = pd.to_datetime(today, dayfirst=True)
+    today_date = get_today_local()
+    start_date = pd.to_datetime(today_date.replace(day=1))
+    today = pd.to_datetime(today_date)
     period_df = get_statistics_for_period(start_date=start_date,
                                           end_date=today)
     img = get_sum_for_period(period_df)

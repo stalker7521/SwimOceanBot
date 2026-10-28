@@ -1,5 +1,9 @@
 """Messgaes and constants for the bot"""
 
+from datetime import timedelta, timezone
+
+LOCAL_TZ = timezone(timedelta(hours=5))  # часовой пояс клуба (UTC+5)
+
 START_TEXT = (
     "Привет! Я бот клуба SwimOcean, который следит, чтобы все проплытые метры были учтены в "
     "наших заплывах! "
