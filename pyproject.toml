@@ -24,6 +24,12 @@ geopy = "^2.4.1"
 selenium = "^4.27.0"
 pytz = "^2025.1"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"

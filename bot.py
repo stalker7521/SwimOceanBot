@@ -25,6 +25,7 @@ matplotlib.use('Agg')  # ДЛЯ СЕРВЕРА
 from constants import START_TEXT, HELP_TEXT, LOCAL_TZ
 
 from map_generator import MapBuildError, RouteFinishedError, generate_map_png
+from notifications import WeeklyNotifier
 from settings import (
     TOKEN, SPREADSHEET_ID, WORKSHEET_NAME, LOCATIONS_SHEET_NAME, SCOPE, START_DATE,
     encrypt_data, decrypt_data, DATA_DIR, ADMIN_IDS
@@ -744,6 +745,51 @@ def handle_getid(message):
         logging.error(f"Не смог удалить команду /getid: {e}")
 
 
+weekly_notifier = WeeklyNotifier(bot, get_df_from_google_sheet, get_statistics_for_period, chromium_lock)
+
+
+def _run_digest_command(message, publish: bool):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    command = "/digest_force" if publish else "/digest_preview"
+    # chat_id и ID темы нужны для настройки NOTIFY_CHAT_ID и NOTIFY_THREAD_ID
+    thread_id = message.message_thread_id if message.is_topic_message else None
+    try:
+        bot.send_message(
+            message.from_user.id,
+            f"{command}: готовлю уведомления, генерация может занять несколько минут.\n"
+            f"chat_id: {message.chat.id}, thread_id: {thread_id}",
+        )
+    except Exception as e:
+        logging.error(f"Не смог написать админу {message.from_user.id}: {e}")
+        return
+    if message.chat.type != 'private':
+        try:
+            bot.delete_message(message.chat.id, message.id)
+        except Exception as e:
+            logging.error(f"Не смог удалить команду {command}: {e}")
+
+    def worker():
+        try:
+            weekly_notifier.run_manual(message.from_user.id, publish=publish)
+        except Exception as e:
+            logging.error(f"Ошибка {command}: {e}")
+            bot.send_message(message.from_user.id, f"{command} завершилась ошибкой: {e}")
+
+    # LLM может отвечать минутами, поэтому не занимаем поток обработки сообщений
+    threading.Thread(target=worker, daemon=True).start()
+
+
+@bot.message_handler(commands=['digest_preview'])
+def handle_digest_preview(message):
+    _run_digest_command(message, publish=False)
+
+
+@bot.message_handler(commands=['digest_force'])
+def handle_digest_force(message):
+    _run_digest_command(message, publish=True)
+
+
 # Запуск бота
 if __name__ == '__main__':
     print("Bot is starting...")
@@ -755,6 +801,10 @@ if __name__ == '__main__':
     # Поток синхронизации очереди (Outbox Worker)
     sync_thread = threading.Thread(target=queue_worker_job, daemon=True)
     sync_thread.start()
+
+    # Поток еженедельных уведомлений (статистика и пост о местности)
+    digest_thread = threading.Thread(target=weekly_notifier.run_forever, daemon=True)
+    digest_thread.start()
 
     load_users_from_sheet()
     # автоматический перезапуск бота при обрыве связи

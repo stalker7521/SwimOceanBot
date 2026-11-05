@@ -3,6 +3,7 @@
 import math
 import os
 import time
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -44,6 +45,32 @@ class RouteFinishedError(Exception):
 
 class MapBuildError(Exception):
     """Raised when metres or location data cannot be turned into a map."""
+
+
+@dataclass
+class SwimPosition:
+    """Where the virtual swimmer is on the route for a given day."""
+
+    lat: float
+    lon: float
+    leg_index: int
+    leg_number: int
+    start_coord: list[float]
+    finish_coord: list[float]
+    start_name: str
+    finish_name: str
+    start_caption: str
+    finish_caption: str
+    description: str
+    leg_travelled: int
+    leg_total: int
+    total_travelled: int
+    bearing: float
+    completed_legs: list = field(default_factory=list)
+
+    @property
+    def leg_remaining(self) -> int:
+        return self.leg_total - self.leg_travelled
 
 
 def calculate_initial_compass_bearing(start: tuple, end: tuple) -> float:
@@ -142,6 +169,19 @@ def get_location(locations_df: pd.DataFrame, dist: int) -> tuple[pd.DataFrame, i
     return df, row_idx
 
 
+def current_point_on_leg(start_coord, finish_coord, dist, distance_travelled) -> tuple[float, float]:
+    """Swimmer point on the map: club metres are scaled to the geographic leg length."""
+    dist_on_map = distance_between(start_coord, finish_coord) * 1000
+    portion_travelled = (distance_travelled / dist) if dist else 0
+    graphical_distance = round(portion_travelled * dist_on_map)
+    current_point = location_at_dist(
+        tuple(start_coord),
+        tuple(finish_coord),
+        graphical_distance / 1000,
+    )
+    return tuple(round(i, 3) for i in current_point)
+
+
 def build_map(
     start_coord,
     finish_coord,
@@ -165,15 +205,7 @@ def build_map(
     draw_marker(start_coord, start_caption).add_to(world_map)
     draw_marker(finish_coord, finish_caption).add_to(world_map)
 
-    dist_on_map = distance_between(start_coord, finish_coord) * 1000
-    portion_travelled = (distance_travelled / dist) if dist else 0
-    graphical_distance = round(portion_travelled * dist_on_map)
-    current_point = location_at_dist(
-        tuple(start_coord),
-        tuple(finish_coord),
-        graphical_distance / 1000,
-    )
-    current_point = tuple(round(i, 3) for i in current_point)
+    current_point = current_point_on_leg(start_coord, finish_coord, dist, distance_travelled)
     bearing = calculate_initial_compass_bearing(
         start=tuple(start_coord),
         end=tuple(finish_coord),
@@ -224,11 +256,11 @@ def build_map(
     return world_map
 
 
-def build_map_for_day(
+def get_swim_position(
     meters_df: pd.DataFrame,
     locations_df: pd.DataFrame,
     day: pd.Timestamp | None = None,
-) -> tuple[folium.Map, str]:
+) -> SwimPosition:
     if day is None:
         day = pd.to_datetime(datetime.now(MAP_TZ).date(), dayfirst=True)
 
@@ -244,9 +276,8 @@ def build_map_for_day(
     start_coord = _parse_coord(df.loc[row_idx, "Start_point"])
     finish_coord = _parse_coord(df.loc[row_idx, "Finish_point"])
     dist = int(df.loc[row_idx, "Distance"])
-    start_caption = _format_caption(df.loc[row_idx, "Start_caption"], DEFAULT_START_CAPTION)
-    finish_caption = _format_caption(df.loc[row_idx, "Finish_caption"], DEFAULT_FINISH_CAPTION)
-    description = str(df.loc[row_idx, "Description"] or "").strip()
+    start_name = str(df.loc[row_idx, "Start_caption"] or "").strip()
+    finish_name = str(df.loc[row_idx, "Finish_caption"] or "").strip()
 
     completed_legs = []
     for _, row in df.loc[:row_idx].iloc[:-1].iterrows():
@@ -254,18 +285,48 @@ def build_map_for_day(
             (_parse_coord(row["Start_point"]), _parse_coord(row["Finish_point"]))
         )
 
-    world_map = build_map(
-        start_coord,
-        finish_coord,
-        start_caption,
-        finish_caption,
-        dist,
-        distance_travelled=current_dist,
+    lat, lon = current_point_on_leg(start_coord, finish_coord, dist, current_dist)
+    return SwimPosition(
+        lat=lat,
+        lon=lon,
+        leg_index=int(row_idx),
+        leg_number=df.index.get_loc(row_idx) + 1,
+        start_coord=start_coord,
+        finish_coord=finish_coord,
+        start_name=start_name,
+        finish_name=finish_name,
+        start_caption=_format_caption(start_name, DEFAULT_START_CAPTION),
+        finish_caption=_format_caption(finish_name, DEFAULT_FINISH_CAPTION),
+        description=str(df.loc[row_idx, "Description"] or "").strip(),
+        leg_travelled=current_dist,
+        leg_total=dist,
+        total_travelled=overall_distance,
+        bearing=calculate_initial_compass_bearing(tuple(start_coord), tuple(finish_coord)),
         completed_legs=completed_legs,
     )
-    remaining = dist - current_dist
-    caption_parts = [description] if description else []
-    caption_parts.append(f"Проплыто {current_dist} м из {dist} м, осталось {remaining} м")
+
+
+def build_map_for_day(
+    meters_df: pd.DataFrame,
+    locations_df: pd.DataFrame,
+    day: pd.Timestamp | None = None,
+) -> tuple[folium.Map, str]:
+    position = get_swim_position(meters_df, locations_df, day)
+
+    world_map = build_map(
+        position.start_coord,
+        position.finish_coord,
+        position.start_caption,
+        position.finish_caption,
+        position.leg_total,
+        distance_travelled=position.leg_travelled,
+        completed_legs=position.completed_legs,
+    )
+    caption_parts = [position.description] if position.description else []
+    caption_parts.append(
+        f"Проплыто {position.leg_travelled} м из {position.leg_total} м, "
+        f"осталось {position.leg_remaining} м"
+    )
     return world_map, "\n".join(caption_parts)
 
 
