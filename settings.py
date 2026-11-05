@@ -33,6 +33,35 @@ else:
     print("WARNING: Переменная ADMIN_IDS не найдена. У бота нет администраторов!")
 
 
+
+def _optional_int(name):
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        print(f"CRITICAL ERROR: {name} должен быть целым числом!")
+        return None
+
+
+# --- Еженедельные уведомления ---
+NOTIFY_CHAT_ID = _optional_int('NOTIFY_CHAT_ID')
+NOTIFY_THREAD_ID = _optional_int('NOTIFY_THREAD_ID')  # ID темы в группе с темами
+if NOTIFY_CHAT_ID is None:
+    print("WARNING: NOTIFY_CHAT_ID не задан. Еженедельные уведомления отключены!")
+
+# --- LLM (любой провайдер с OpenAI-совместимым /v1/chat/completions) ---
+LLM_TOKEN = os.environ.get('LLM_TOKEN')
+LLM_URL = os.environ.get('LLM_URL')
+LLM_MODELS = [model.strip() for model in os.environ.get('LLM_MODELS', '').split(',') if model.strip()]
+_missing_llm_vars = [name for name, value in (('LLM_TOKEN', LLM_TOKEN), ('LLM_URL', LLM_URL),
+                                              ('LLM_MODELS', LLM_MODELS)) if not value]
+if _missing_llm_vars:
+    print(f"WARNING: не заданы {', '.join(_missing_llm_vars)}. "
+          "Пост о местности будет заменен запасным текстом!")
+
+
 def encrypt_data(data: str) -> str:
     """Шифрует строку"""
     return fernet.encrypt(data.encode()).decode()

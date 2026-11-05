@@ -18,3 +18,5 @@ data/
 *.db-shm
 *.xlsx
 *.ipynb
+.cursor
+tests/
